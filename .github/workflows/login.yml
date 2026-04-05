@@ -108,12 +108,15 @@ jobs:
         shell: bash
         run: npx playwright install --with-deps chromium
 
+      # --- 1. FULL STEALTH CONFIGURATION ---
+      # This removes standard Playwright device presets that override custom user agents
+      # and passes Chrome flags that block the detection of browser automation.
       - name: Create Playwright config
         shell: bash
         run: |
           set -euo pipefail
           cat > playwright.config.js <<'EOF'
-          const { defineConfig, devices } = require('@playwright/test');
+          const { defineConfig } = require('@playwright/test');
           module.exports = defineConfig({
             testDir: './tests',
             timeout: 300000, 
@@ -126,10 +129,6 @@ jobs:
               timezoneId: 'Europe/Amsterdam',
               viewport: { width: 1366, height: 768 },
               colorScheme: 'light',
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-              extraHTTPHeaders: {
-                'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8'
-              },
               screenshot: 'only-on-failure',
               trace: 'retain-on-failure',
               video: 'retain-on-failure'
@@ -138,13 +137,16 @@ jobs:
               {
                 name: 'chromium',
                 use: { 
-                  ...devices['Desktop Chrome']
+                  launchOptions: {
+                    args: ['--disable-blink-features=AutomationControlled']
+                  }
                 }
               }
             ]
           });
           EOF
 
+      # --- 2. FULL STEALTH TEST SCRIPT ---
       - name: Create Playwright test
         shell: bash
         run: |
@@ -156,7 +158,7 @@ jobs:
           const path = require('path');
           const { execSync } = require('child_process');
 
-          test('login only and verify success', async ({ browser }, testInfo) => {
+          test('login only and verify success', async ({ browser }) => {
             const screenshotDir = path.join(process.cwd(), 'login-screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
             let step = 1;
@@ -179,7 +181,13 @@ jobs:
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               console.log(`\nStarting Attempt ${attempt} of ${maxAttempts}...`);
               
+              // Spawns context with localized Dutch headers to match target proxies
               const context = await browser.newContext({
+                locale: 'nl-NL',
+                timezoneId: 'Europe/Amsterdam',
+                extraHTTPHeaders: {
+                  'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8'
+                },
                 proxy: {
                   server: process.env.PROXY_SERVER,
                   username: process.env.PROXY_USERNAME,
@@ -199,21 +207,20 @@ jobs:
                   step += 1;
 
                   if (botToken && chatId) {
-                    console.log(`Sending ${filename} to Telegram...`);
                     try {
                       execSync(`curl -s -F chat_id="${chatId}" -F photo="@${file}" -F caption="Step: ${filename}" "https://api.telegram.org/bot${botToken}/sendPhoto"`, { stdio: 'ignore' });
                     } catch (telegramErr) {
                       console.log(`Telegram dispatch failed: ${telegramErr.message}`);
                     }
                   }
-                  
                   return file;
                 } catch (e) {
-                  console.log(`[STEP ${step}] Screenshot failed (Proxy probably hung): ${e.message}`);
+                  console.log(`[STEP ${step}] Screenshot failed: ${e.message}`);
                 }
               }
 
               try {
+                // Runtime override of the webdriver flag
                 await page.addInitScript(() => {
                   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                 });
@@ -294,7 +301,6 @@ jobs:
                 }
 
                 console.log('🎉 SUCCESS: Navigated away from login page! Saving storage state...');
-                // Save state to JSON file
                 await context.storageState({ path: 'state.json' });
 
                 success = true;
@@ -390,7 +396,6 @@ jobs:
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="bol login failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
 
-      # --- STATE ARTIFACT UPLOAD ---
       - name: Upload Auth State
         if: steps.playwright.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -407,7 +412,6 @@ jobs:
           path: playwright-report/
           retention-days: 14
 
-  # --- TRIGGER ORDER WORKFLOW ---
   trigger-ordering:
     needs: playwright-login 
     if: success() 
