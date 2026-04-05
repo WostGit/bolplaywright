@@ -123,7 +123,6 @@ jobs:
             retries: process.env.CI ? 1 : 0,
             reporter: [['html', { open: 'never' }], ['list']],
             use: {
-              // 1. Ditch headless mode to look human
               headless: false, 
               locale: 'nl-NL',
               timezoneId: 'Europe/Amsterdam',
@@ -147,7 +146,6 @@ jobs:
                 name: 'chromium',
                 use: { 
                   ...devices['Desktop Chrome'],
-                  // 2. Erase Chromium bot signatures 
                   launchOptions: {
                     args: [
                       '--disable-blink-features=AutomationControlled',
@@ -194,12 +192,10 @@ jobs:
               throw new Error("Missing BOL_EMAIL or BOL_PASSWORD environment variables.");
             }
 
-            // 3. Mask navigator.webdriver before navigation happens
             await page.addInitScript(() => {
               Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             });
 
-            // 4. Navigation
             console.log('Navigating to bol.com login page...');
             await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
             await page.waitForTimeout(3000); 
@@ -207,7 +203,6 @@ jobs:
 
             console.log(`Current URL: ${page.url()}`);
 
-            // 5. Cookie handling
             console.log('Checking for cookie consent buttons...');
             const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
             try {
@@ -221,7 +216,6 @@ jobs:
             }
             await snap('after-cookies');
 
-            // 6. Storefront Redirect Handling
             if (page.url().includes('/nl/nl/') || !page.url().includes('/wsp/login')) {
                 console.log('Redirected! Looking for storefront login button...');
                 const navLoginBtn = page.locator('a:has-text("Inloggen"), button:has-text("Inloggen"), [data-test="login-link"]').first();
@@ -236,7 +230,6 @@ jobs:
                 }
             }
 
-            // 7. Form Interaction with Human-Like Mimicry
             console.log('Locating credentials fields...');
             const emailInput = page.locator('input#username, input[name="j_username"]').first();
             await expect(emailInput).toBeVisible({ timeout: 15000 });
@@ -247,7 +240,7 @@ jobs:
 
             console.log('Typing email with human delays...');
             await emailInput.click();
-            await page.keyboard.type(email, { delay: 100 }); // 100ms between keystrokes
+            await page.keyboard.type(email, { delay: 100 }); 
             await page.waitForTimeout(600);
 
             const passwordInput = page.locator('input#password, input[name="j_password"]').first();
@@ -272,7 +265,6 @@ jobs:
             await page.waitForTimeout(6000);
             await snap('after-login-attempt');
 
-            // 8. Verify outcomes
             console.log('Analyzing result page...');
             const currentUrl = page.url();
             console.log(`Current URL after login attempt: ${currentUrl}`);
@@ -289,7 +281,8 @@ jobs:
 
       - name: Run Playwright test
         shell: bash
-        run: npx playwright test
+        # xvfb-run forces linux to provide a virtual display for headed chrome
+        run: xvfb-run npx playwright test
 
       - name: Update YAML file on successful login
         if: success()
