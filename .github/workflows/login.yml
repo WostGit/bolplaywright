@@ -39,6 +39,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -86,7 +87,6 @@ jobs:
               f.write(f"BOL_EMAIL={email}\n")
           PY
 
-      # Stealth packages injected here
       - name: Create package.json
         shell: bash
         run: |
@@ -107,9 +107,24 @@ jobs:
         shell: bash
         run: npm install
 
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         shell: bash
         run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: npx playwright install-deps chromium
 
       - name: Create Playwright config
         shell: bash
@@ -198,7 +213,6 @@ jobs:
               
               const page = await context.newPage();
               
-              // FAST TIMEOUTS (10s nav, 4s elements)
               page.setDefaultNavigationTimeout(10000); 
               page.setDefaultTimeout(4000);
 
@@ -225,7 +239,6 @@ jobs:
               }
 
               try {
-                // Navigate to homepage first to build trust
                 console.log('Navigating to bol.com homepage...');
                 await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
                 
@@ -251,12 +264,15 @@ jobs:
                 await snap('login-page-loaded');
 
                 const emailInput = page.locator('input#username, input[name="j_username"]').first();
-                await emailInput.click();
-                await page.keyboard.type(email); 
+                await emailInput.waitFor({ state: 'visible', timeout: 5000 });
+                
+                // FIXED: Using fill directly to avoid pointer pointer overlap errors
+                console.log('Filling email...');
+                await emailInput.fill(email);
 
                 const passwordInput = page.locator('input#password, input[name="j_password"]').first();
-                await passwordInput.click();
-                await page.keyboard.type(password);
+                console.log('Filling password...');
+                await passwordInput.fill(password);
                 
                 await snap('credentials-filled');
 
