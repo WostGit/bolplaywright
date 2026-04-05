@@ -248,7 +248,6 @@ jobs:
                 await page.waitForLoadState('networkidle');
                 console.log('[FLOW LOG] Logged in successfully and fully redirected.');
 
-                // BYPASS SEARCHING COMPLETELY AND FORCE ADD TO CART VIA DIRECT URL!
                 console.log('[FLOW LOG] Forcing direct cart add for AirTag 4-Pack...');
                 await page.goto('https://www.bol.com/nl/order/basket/addItems.html?productId=9300000035840899&offerUid=5589e402-f3f8-446a-8495-383cb58b6cb6&quantity=1', { waitUntil: 'networkidle' });
                 
@@ -256,6 +255,14 @@ jobs:
                 await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', { waitUntil: 'networkidle' });
                 console.log(`[FLOW LOG] Cart page loaded successfully: ${page.url()}`);
                 
+                // NEW: Send a successful checkout snapshot straight to your phone!
+                const successScreenshotPath = `success-cart-loaded.png`;
+                await page.screenshot({ path: successScreenshotPath, fullPage: true });
+                await sendTelegramAlert(
+                  successScreenshotPath, 
+                  `🎉 Success! Flow completed natively.\nFinal URL: ${page.url()}`
+                );
+
                 success = true;
                 
               } catch (err) {
