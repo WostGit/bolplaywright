@@ -24,5 +24,12 @@
     "repository": "WostGit/bolplaywright",
     "workflow": "Playwright Bol Registration Only",
     "used_to_login": false
+  },
+  {
+    "email": "robinmeijer@qrlfoundation.org",
+    "run_id": "24000418385",
+    "repository": "WostGit/bolplaywright",
+    "workflow": "Playwright Bol Registration Only",
+    "used_to_login": false
   }
 ]
