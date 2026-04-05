@@ -190,7 +190,6 @@ jobs:
               const page = await context.newPage();
               page.setDefaultNavigationTimeout(30000); 
 
-              // High-speed Telegram Dispatch Function
               async function snap(name) {
                 const filename = `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`;
                 const file = path.join(screenshotDir, filename);
@@ -199,7 +198,6 @@ jobs:
                   console.log(`[STEP ${step}] Screenshot saved: ${file}`);
                   step += 1;
 
-                  // Fire to Telegram immediately via curl if credentials exist
                   if (botToken && chatId) {
                     console.log(`Sending ${filename} to Telegram...`);
                     try {
@@ -295,7 +293,10 @@ jobs:
                     continue;
                 }
 
-                console.log('🎉 SUCCESS: Navigated away from login page!');
+                console.log('🎉 SUCCESS: Navigated away from login page! Saving storage state...');
+                // Save state to JSON file
+                await context.storageState({ path: 'state.json' });
+
                 success = true;
                 await context.close();
                 break; 
@@ -389,6 +390,15 @@ jobs:
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="bol login failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
 
+      # --- NEW STATE ARTIFACT UPLOAD ---
+      - name: Upload Auth State
+        if: steps.playwright.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-state
+          path: state.json
+          retention-days: 1
+
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
@@ -396,3 +406,11 @@ jobs:
           name: playwright-login-report
           path: playwright-report/
           retention-days: 14
+
+  # --- NEW ORDERING TRIGGER ---
+  trigger-ordering:
+    needs: playwright-login 
+    # Only run ordering if the login job was successful
+    if: success() 
+    uses: ./.github/workflows/order.yml
+    secrets: inherit
