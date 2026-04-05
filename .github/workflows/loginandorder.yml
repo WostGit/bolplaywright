@@ -134,7 +134,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('Full inline chain: login -> product page -> add to cart', async () => {
+          test('Full inline chain: login -> product search -> add to cart', async () => {
             console.log('\n[FLOW LOG] Full flow script started.');
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
@@ -177,7 +177,6 @@ jobs:
             }
 
             console.log('[FLOW LOG] Clicking Inloggen element with pointer override...');
-            // FORCED CLICK: This bypasses pointer event interception by overlays
             await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click({ force: true });
             
             console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
@@ -194,16 +193,75 @@ jobs:
             await page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 35000 });
             console.log('[FLOW LOG] User session successfully established!');
 
-            // --- STAGE 2: STEER TO PRODUCT & ADD TO CART ---
-            console.log('[FLOW LOG] Session carries over. Navigating directly to target product...');
-            await page.goto('https://www.bol.com/nl/nl/p/apple-airtag-4-stuks/9300000035840899/', { waitUntil: 'domcontentloaded' });
+
+            // --- STAGE 2: ORGANIC SEARCH (With Ultra-Verbose Error Handling) ---
+            console.log('[FLOW LOG] Finding search bar...');
+            const searchBar = page.locator('input#search-key, input[type="search"]').first();
             
+            try {
+              await expect(searchBar).toBeVisible({ timeout: 15000 });
+            } catch (err) {
+              console.error(`\n[CRITICAL ERROR] Failed while waiting for Search Bar!`);
+              console.error(`[DEBUG INFO] Current URL is: ${page.url()}`);
+              console.error(`[DEBUG INFO] Reason: ${err.message}\n`);
+              throw err;
+            }
+            
+            console.log('[FLOW LOG] Typing product EAN/Title into search...');
+            try {
+              await searchBar.fill('9300000035840899'); 
+              await page.keyboard.press('Enter');
+            } catch (err) {
+              console.error(`\n[CRITICAL ERROR] Failed to type into the search bar!`);
+              console.error(`[DEBUG INFO] HTML state of bar: ${await searchBar.evaluate(el => el.outerHTML).catch(() => 'unreadable')}`);
+              throw err;
+            }
+            
+            console.log('[FLOW LOG] Waiting for search results to process...');
+            try {
+              await page.waitForURL('**/s/?searchtext=**', { timeout: 20000 });
+            } catch (err) {
+              console.error(`\n[CRITICAL ERROR] The site did not transition to the search results page!`);
+              console.error(`[DEBUG INFO] Stuck at URL: ${page.url()}`);
+              throw err;
+            }
+            
+            console.log('[FLOW LOG] Locating product in search results...');
+            const productTitleLink = page.locator('a.product-title').first();
+            
+            try {
+              await expect(productTitleLink).toBeVisible({ timeout: 15000 });
+              console.log('[FLOW LOG] Clicking the top search result product...');
+              await productTitleLink.click();
+            } catch (err) {
+              console.error(`\n[CRITICAL ERROR] Failed to locate or click the product in search results!`);
+              console.error(`[DEBUG INFO] Current URL: ${page.url()}`);
+              console.error(`[DEBUG INFO] Did the page load items? Check via logs or take screenshot.`);
+              throw err;
+            }
+            
+
+            // --- STAGE 3: ADD TO CART (With Ultra-Verbose Error Handling) ---
             console.log('[FLOW LOG] Awaiting "In winkelwagen" buy button visibility...');
             const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
-            await expect(buyButton).toBeVisible({ timeout: 20000 });
+            
+            try {
+              await expect(buyButton).toBeVisible({ timeout: 20000 });
+            } catch (err) {
+              console.error(`\n[CRITICAL ERROR] The "In winkelwagen" button never appeared!`);
+              console.error(`[DEBUG INFO] Failed on URL: ${page.url()}`);
+              console.error(`[DEBUG INFO] This usually means we got logged out, blocked by anti-bot, or navigated to a broken page.`);
+              throw err;
+            }
             
             console.log('[FLOW LOG] Clicking to drop item in cart...');
-            await buyButton.click();
+            try {
+              await buyButton.click();
+            } catch (err) {
+              console.error(`\n[CRITICAL ERROR] Failed to actually click the buy button.`);
+              console.error(`[DEBUG INFO] Button HTML: ${await buyButton.evaluate(el => el.outerHTML).catch(() => 'unreadable')}`);
+              throw err;
+            }
             
             console.log('[FLOW LOG] Pausing 4000ms for network updates to conclude...');
             await page.waitForTimeout(4000); 
