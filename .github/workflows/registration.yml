@@ -1,5 +1,4 @@
 name: Playwright Bol Registration Only
-
 on:
   workflow_dispatch:
   push:
@@ -14,25 +13,21 @@ jobs:
   playwright:
     runs-on: ubuntu-latest
     timeout-minutes: 35
-
     env:
       DATASET_URL: https://raw.githubusercontent.com/LJPc-solutions/Nederlandse-adressen-en-postcodes/main/Nederland.csv.zst
       DATASET_DIR: .cache/nl-addresses
       DATASET_FILE: .cache/nl-addresses/Nederland.csv.zst
-
       BOL_SALUTATION: "UNKNOWN"
       BOL_COUNTRY_MODE: "NL"
       BOL_PURCHASE_NEWSLETTER: "true"
       BOL_RECOMMENDATION_NEWSLETTER: "false"
       SUBMIT_FORM: "true"
-
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
       BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,6 +42,7 @@ jobs:
           test -n "$PROXY_USERNAME" || { echo "Missing secret PROXY_USERNAME"; exit 1; }
           test -n "$PROXY_PASSWORD" || { echo "Missing secret PROXY_PASSWORD"; exit 1; }
           test -n "$BOL_PASSWORD" || { echo "Missing secret BOL_PASSWORD"; exit 1; }
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -62,7 +58,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install zstandard
+          pip install zstandard pyyaml
+
       - name: Restore cached dataset
         id: cache-dataset
         uses: actions/cache@v4
@@ -71,6 +68,7 @@ jobs:
           key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v11
           restore-keys: |
             ${{ runner.os }}-nl-addresses-ljpc-
+
       - name: Download dataset on cache miss
         if: steps.cache-dataset.outputs.cache-hit != 'true'
         shell: bash
@@ -82,6 +80,7 @@ jobs:
             "$DATASET_URL" \
             -o "$DATASET_FILE"
           ls -lh "$DATASET_FILE"
+
       - name: Check proxy connectivity
         shell: bash
         run: |
@@ -93,6 +92,7 @@ jobs:
             --retry 2 \
             --retry-delay 2 \
             https://login.bol.com/wsp/register
+
       - name: Generate identity and random Dutch address
         shell: bash
         run: |
@@ -182,6 +182,7 @@ jobs:
               f.write(f'BOL_STREET_NUMBER={huisnummer}\n')
           PY
           python random_nl_house.py
+
       - name: Create package.json
         shell: bash
         run: |
@@ -195,6 +196,7 @@ jobs:
             }
           }
           EOF
+
       - name: Install Node dependencies
         shell: bash
         run: npm install
@@ -242,6 +244,7 @@ jobs:
             ]
           });
           EOF
+
       - name: Create Playwright test
         shell: bash
         run: |
@@ -309,8 +312,7 @@ jobs:
                     await locator.first().click();
                     await page.waitForTimeout(800);
                     return true;
-                  }
-                } catch {}
+                  }                } catch {}
               }
               return false;
             }
@@ -397,8 +399,7 @@ jobs:
               ];
               for (const locator of checks) {
                 try {
-                  if (await locator.isVisible({ timeout: 500 })) return true;
-                } catch {}
+                  if (await locator.isVisible({ timeout: 500 })) return true;                } catch {}
               }
               const html = await page.content().catch(() => '');
               return /recaptcha|captcha/i.test(html);
@@ -466,6 +467,7 @@ jobs:
             await snap('19-after-registration');
           });
           EOF
+
       - name: Run Playwright test
         shell: bash
         run: npx playwright test
@@ -477,27 +479,49 @@ jobs:
           set -euo pipefail
           mkdir -p data
           python <<'PY'
-          import json, os
-          path = "data/registered-emails.json"
+          import yaml
+          import os
+          from datetime import datetime
+
+          path = "data/registered-emails.yml"
           email = os.environ.get("BOL_EMAIL", "")
-          entry = {
+
+          # Only proceed if we actually generated an email
+          if not email:
+              print("No email generated, skipping YAML update.")
+              exit(0)
+
+          now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+
+          new_entry = {
               "email": email,
               "run_id": os.environ.get("GITHUB_RUN_ID", ""),
               "repository": os.environ.get("GITHUB_REPOSITORY", ""),
               "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
-              "used_to_login": False
+              "used_to_login": False,
+              "created_at": now_str,
+              "last_login_at": None
           }
+
           try:
-              with open(path, "r", encoding="utf-8") as f:
-                  data = json.load(f)
-          except FileNotFoundError:
+              if os.path.exists(path):
+                  with open(path, "r", encoding="utf-8") as f:
+                      data = yaml.safe_load(f) or []
+              else:
+                  data = []
+          except Exception as e:
+              print(f"Error reading YAML, resetting file. Error: {e}")
               data = []
+
           if not isinstance(data, list):
               data = []
-          data.append(entry)
+
+          data.append(new_entry)
+
           with open(path, "w", encoding="utf-8") as f:
-              json.dump(data, f, indent=2, ensure_ascii=False)
+              yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
           PY
+
       - name: Commit registered email list
         if: always()
         shell: bash
@@ -505,10 +529,11 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/registered-emails.json
+          git add data/registered-emails.yml
           git diff --cached --quiet && exit 0
-          git commit -m "Store registered email for run $GITHUB_RUN_ID"
+          git commit -m "Store registered email in YAML for run $GITHUB_RUN_ID"
           git push
+
       - name: Send Telegram success message
         if: success() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
@@ -517,6 +542,7 @@ jobs:
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="bol registration succeeded%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
+
       - name: Send before-registration screenshot to Telegram
         if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
@@ -529,6 +555,7 @@ jobs:
               -F photo=@"$FILE" \
               -F caption="Before registration screenshot"
           fi
+
       - name: Send after-registration screenshot to Telegram
         if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
@@ -541,6 +568,7 @@ jobs:
               -F photo=@"$FILE" \
               -F caption="After registration screenshot"
           fi
+
       - name: Send Telegram failure message
         if: failure() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
@@ -549,12 +577,13 @@ jobs:
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="bol registration failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
       - name: Upload registered emails file
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: registered-emails
-          path: data/registered-emails.json
+          path: data/registered-emails.yml
           if-no-files-found: warn
           retention-days: 14
 
