@@ -19,8 +19,6 @@ jobs:
       DATASET_DIR: .cache/nl-addresses
       DATASET_FILE: .cache/nl-addresses/Nederland.csv.zst
       BOL_SALUTATION: "UNKNOWN"
-      BOL_COUNTRY_MODE: "NL"
-      SUBMIT_FORM: "true"
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
@@ -31,6 +29,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Validate secrets
         shell: bash
@@ -41,53 +41,102 @@ jobs:
           test -n "$PROXY_PASSWORD" || { echo "Missing PROXY_PASSWORD"; exit 1; }
           test -n "$BOL_PASSWORD" || { echo "Missing BOL_PASSWORD"; exit 1; }
 
-      - name: Setup Node & Playwright
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependency
         shell: bash
         run: |
-          npm install @playwright/test
-          npx playwright install --with-deps chromium
+          python -m pip install --upgrade pip
+          pip install zstandard
 
-      - name: Generate identity and address
+      - name: Restore cached dataset
+        id: cache-dataset
+        uses: actions/cache@v4
+        with:
+          path: .cache/nl-addresses
+          key: ${{ runner.os }}-nl-addresses-v12
+          restore-keys: |
+            ${{ runner.os }}-nl-addresses-
+
+      - name: Download dataset on cache miss
+        if: steps.cache-dataset.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "$DATASET_DIR"
+          curl -L --fail --retry 5 --retry-delay 5 \
+            -A "playwright-bol-register/1.0" \
+            "$DATASET_URL" -o "$DATASET_FILE"
+          ls -lh "$DATASET_FILE"
+
+      - name: Generate identity and random Dutch address
         shell: bash
         run: |
           cat > random_nl_house.py <<'PY'
-          import csv, io, os, random, re, zstandard as zstd
+          import csv
+          import io
+          import os
+          import random
+          import re
+          import zstandard as zstd
+
           DATASET_FILE = os.environ["DATASET_FILE"]
-          def random_address_from_local_zstd_csv(path):
+
+          def random_address_from_local_zstd_csv(path: str):
               with open(path, "rb") as f:
                   dctx = zstd.ZstdDecompressor()
                   with dctx.stream_reader(f) as reader:
-                      text = io.TextIOWrapper(reader, encoding="utf-8")
-                      reader = csv.DictReader(text, delimiter=";")
-                      chosen, count = None, 0
-                      for row in reader:
-                          if all((row.get(k) or "").strip() for k in ["straat","huisnummer","postcode"]):
-                              count += 1
-                              if random.randrange(count) == 0:
-                                  chosen = row
-              return chosen
-          first_names = ["Jan","Pieter","Kees","Henk","Hans","Johan","Peter","Paul","Mark","Bas"]
-          last_names = ["De Jong","Jansen","De Vries","Van den Berg","Bakker","Visser"]
+                      text_stream = io.TextIOWrapper(reader, encoding="utf-8", newline="")
+                      csv_reader = csv.DictReader(text_stream, delimiter=";")
+                      chosen = None
+                      count = 0
+                      for row in csv_reader:
+                          straat = (row.get("straat") or "").strip()
+                          huisnummer = (row.get("huisnummer") or "").strip()
+                          postcode = (row.get("postcode") or "").strip()
+                          if not straat or not huisnummer or not postcode:
+                              continue
+                          count += 1
+                          if random.randrange(count) == 0:
+                              chosen = row
+                      if chosen is None:
+                          raise RuntimeError("No valid address found in dataset")
+                      return chosen
+
+          first_names = ["Jan","Pieter","Kees","Henk","Hans","Johan","Peter","Paul","Mark","Bas","Tom","Daan","Bram","Luuk","Milan"]
+          last_names = ["De Jong","Jansen","De Vries","Van den Berg","Bakker","Visser","Smit","Meijer","De Boer","Mulder"]
+
           first_name = random.choice(first_names)
           last_name = random.choice(last_names)
           row = random_address_from_local_zstd_csv(DATASET_FILE)
-          postcode = (row.get("postcode") or "").replace(" ","").upper()
+
+          postcode = (row.get("postcode") or "").strip().replace(" ", "").upper()
           huisnummer = (row.get("huisnummer") or "").strip()
-          phone = "06" + "".join(str(random.randint(0,9)) for _ in range(8))
-          email = f"{first_name.lower()}{last_name.lower().replace(' ','')}@qrlfoundation.org"
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"BOL_FIRST_NAME={first_name}\n")
-              f.write(f"BOL_LAST_NAME={last_name}\n")
-              f.write(f"BOL_PHONE={phone}\n")
-              f.write(f"BOL_EMAIL={email}\n")
-              f.write(f"BOL_POSTAL_CODE={postcode}\n")
-              f.write(f"BOL_STREET_NUMBER={huisnummer}\n")
+          phone = "06" + "".join(str(random.randint(0, 9)) for _ in range(8))
+          email = f"{first_name.lower()}{last_name.lower().replace(' ', '')}@qrlfoundation.org"
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f'BOL_FIRST_NAME={first_name}\n')
+              f.write(f'BOL_LAST_NAME={last_name}\n')
+              f.write(f'BOL_PHONE={phone}\n')
+              f.write(f'BOL_EMAIL={email}\n')
+              f.write(f'BOL_POSTAL_CODE={postcode}\n')
+              f.write(f'BOL_STREET_NUMBER={huisnummer}\n')
           PY
           python random_nl_house.py
 
-      - name: Create Playwright Config
+      - name: Create Playwright Config & Test
         shell: bash
         run: |
+          mkdir -p tests
+
           cat > playwright.config.js <<'EOF'
           const { defineConfig } = require('@playwright/test');
           module.exports = defineConfig({
@@ -100,22 +149,21 @@ jobs:
               timezoneId: 'Europe/Amsterdam',
               viewport: { width: 1366, height: 768 },
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              proxy: { server: process.env.PROXY_SERVER, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD },
+              proxy: {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              },
               screenshot: 'on',
-              video: 'on',
-              trace: 'on'
+              video: 'on'
             }
           });
           EOF
 
-      - name: Create Robust Registration Test
-        shell: bash
-        run: |
-          mkdir -p tests
           cat > tests/bol-register.spec.js <<'EOF'
-          const { test, expect } = require('@playwright/test');
+          const { test } = require('@playwright/test');
 
-          test('bol.com registration - anti-freeze', async ({ page }) => {
+          test('bol.com registration', async ({ page }) => {
             async function snap(name) {
               await page.screenshot({ path: `test-results/${name}.png`, fullPage: true });
             }
@@ -124,42 +172,42 @@ jobs:
             await page.waitForTimeout(3000);
             await snap('01-page-loaded');
 
-            // === GENDER SELECTION (most common freeze point) ===
-            await page.waitForSelector('button[role="radio"], [title*="heer"], [title*="mevrouw"], [title*="liever geen"]', { timeout: 15000 });
-            
-            const genderOptions = [
-              page.locator('button[title*="liever geen"]').first(),
-              page.locator('button[title*="heer"]').first(),
-              page.locator('button[role="radio"]').first()
+            // Gender selection
+            const genderSelectors = [
+              'button[title*="liever geen"]',
+              'button[title*="heer"]',
+              'button[role="radio"]'
             ];
-
-            for (const opt of genderOptions) {
-              if (await opt.isVisible({ timeout: 2000 }).catch(() => false)) {
-                await opt.scrollIntoViewIfNeeded();
-                await opt.click({ force: true, timeout: 10000 });
-                break;
-              }
+            for (const sel of genderSelectors) {
+              try {
+                const el = page.locator(sel).first();
+                if (await el.isVisible({ timeout: 5000 })) {
+                  await el.scrollIntoViewIfNeeded();
+                  await el.click({ force: true });
+                  break;
+                }
+              } catch {}
             }
             await page.waitForTimeout(2000);
             await snap('02-gender-selected');
 
-            // Fill form with force and slow typing
-            await page.getByLabel(/voornaam/i).fill(process.env.BOL_FIRST_NAME, { timeout: 10000 });
+            // Fill form
+            await page.getByLabel(/voornaam/i).fill(process.env.BOL_FIRST_NAME);
             await page.getByLabel(/achternaam/i).fill(process.env.BOL_LAST_NAME);
-            await snap('03-names');
+            await snap('03-names-filled');
 
             await page.getByLabel(/postcode/i).fill(process.env.BOL_POSTAL_CODE);
             await page.getByLabel(/huisnummer/i).fill(process.env.BOL_STREET_NUMBER);
-            await page.waitForTimeout(4000); // Important for address validation
-            await snap('04-address');
+            await page.waitForTimeout(4000);   // Wait for address validation
+            await snap('04-address-filled');
 
             await page.getByLabel(/telefoonnummer/i).fill(process.env.BOL_PHONE);
             await page.getByLabel(/e-mailadres/i).fill(process.env.BOL_EMAIL);
             await page.getByLabel(/wachtwoord/i).fill(process.env.BOL_PASSWORD);
-            await snap('05-credentials');
+            await snap('05-credentials-filled');
 
             // Submit
-            const submitBtn = page.getByRole('button', { name: /registreer|aanmaken|account aanmaken/i }).first();
+            const submitBtn = page.getByRole('button', { name: /registreer|aanmaken/i }).first();
             await submitBtn.scrollIntoViewIfNeeded();
             await submitBtn.click({ force: true });
             await page.waitForTimeout(8000);
@@ -167,11 +215,14 @@ jobs:
           });
           EOF
 
-      - name: Run Playwright Test
+      - name: Install & Run Playwright
         shell: bash
-        run: npx playwright test
+        run: |
+          npm install @playwright/test
+          npx playwright install --with-deps chromium
+          npx playwright test
 
-      - name: Persist email
+      - name: Persist registered email
         if: always()
         shell: bash
         run: |
@@ -189,7 +240,7 @@ jobs:
               with open(path, "w") as f: json.dump(data, f, indent=2)
           '
 
-      - name: Commit email
+      - name: Commit registered email
         if: always()
         shell: bash
         run: |
@@ -197,4 +248,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/registered-emails.json
           git diff --cached --quiet && exit 0
-          git commit -m "Register new email" && git push || echo "No changes"
+          git commit -m "Add new registered email - run $GITHUB_RUN_ID" && git push || echo "Nothing to commit"
