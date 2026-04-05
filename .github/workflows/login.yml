@@ -108,9 +108,6 @@ jobs:
         shell: bash
         run: npx playwright install --with-deps chromium
 
-      # --- 1. FULL STEALTH CONFIGURATION ---
-      # This removes standard Playwright device presets that override custom user agents
-      # and passes Chrome flags that block the detection of browser automation.
       - name: Create Playwright config
         shell: bash
         run: |
@@ -146,7 +143,6 @@ jobs:
           });
           EOF
 
-      # --- 2. FULL STEALTH TEST SCRIPT ---
       - name: Create Playwright test
         shell: bash
         run: |
@@ -181,7 +177,6 @@ jobs:
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               console.log(`\nStarting Attempt ${attempt} of ${maxAttempts}...`);
               
-              // Spawns context with localized Dutch headers to match target proxies
               const context = await browser.newContext({
                 locale: 'nl-NL',
                 timezoneId: 'Europe/Amsterdam',
@@ -198,21 +193,23 @@ jobs:
               const page = await context.newPage();
               page.setDefaultNavigationTimeout(30000); 
 
+              // Modified to FORCE Telegram pushes directly after snaps
               async function snap(name) {
                 const filename = `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`;
                 const file = path.join(screenshotDir, filename);
                 try {
                   await page.screenshot({ path: file, fullPage: true, timeout: 5000 });
                   console.log(`[STEP ${step}] Screenshot saved: ${file}`);
-                  step += 1;
-
+                  
                   if (botToken && chatId) {
+                    console.log(`[STEP ${step}] Sending ${filename} to Telegram...`);
                     try {
                       execSync(`curl -s -F chat_id="${chatId}" -F photo="@${file}" -F caption="Step: ${filename}" "https://api.telegram.org/bot${botToken}/sendPhoto"`, { stdio: 'ignore' });
                     } catch (telegramErr) {
-                      console.log(`Telegram dispatch failed: ${telegramErr.message}`);
+                      console.log(`[STEP ${step}] Telegram dispatch failed.`);
                     }
                   }
+                  step += 1;
                   return file;
                 } catch (e) {
                   console.log(`[STEP ${step}] Screenshot failed: ${e.message}`);
@@ -220,75 +217,56 @@ jobs:
               }
 
               try {
-                // Runtime override of the webdriver flag
                 await page.addInitScript(() => {
                   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                 });
 
                 console.log('Navigating to bol.com login page...');
                 await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded' });
-                await page.waitForTimeout(2000); 
                 await snap('opened-login-page');
 
                 const bodyText = await page.innerText('body');
                 if (bodyText.includes('captcha') || bodyText.includes('robot') || bodyText.includes('unusual traffic')) {
-                  console.log('⚠️ Captcha or Block detected! Recycling proxy and trying again.');
+                  console.log('⚠️ Captcha or Block detected! Recycling proxy...');
                   await context.close();
                   continue; 
                 }
 
-                console.log('Checking for cookie consent buttons...');
                 const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
-                if (await cookieBtn.isVisible({ timeout: 3000 })) {
+                if (await cookieBtn.isVisible({ timeout: 2000 })) {
                   console.log('Cookie banner detected. Clicking accept...');
                   await cookieBtn.click();
-                  await page.waitForTimeout(1000);
                 }
                 await snap('after-cookies');
 
                 if (page.url().includes('/nl/nl/') || !page.url().includes('/wsp/login')) {
-                    console.log('Redirected! Looking for storefront login button...');
                     const navLoginBtn = page.locator('a:has-text("Inloggen"), button:has-text("Inloggen"), [data-test="login-link"]').first();
-                    
-                    if (await navLoginBtn.isVisible({ timeout: 5000 })) {
-                         console.log('Found login button. Hovering and clicking...');
-                         await navLoginBtn.hover();
+                    if (await navLoginBtn.isVisible({ timeout: 3000 })) {
                          await navLoginBtn.click();
-                         await page.waitForURL('**/wsp/login**', { timeout: 20000 });
+                         await page.waitForURL('**/wsp/login**', { timeout: 15000 });
                          await snap('after-storefront-login-click');
                     }
                 }
 
-                console.log('Locating credentials fields...');
                 const emailInput = page.locator('input#username, input[name="j_username"]').first();
-                await expect(emailInput).toBeVisible({ timeout: 15000 });
+                await expect(emailInput).toBeVisible({ timeout: 10000 });
 
-                console.log('Simulating human mouse movement to email input...');
-                await emailInput.hover();
-
-                console.log('Typing email with human delays...');
+                // Removed delays and human hover simulations
                 await emailInput.click();
-                await page.keyboard.type(email, { delay: 100 }); 
+                await page.keyboard.type(email); 
 
                 const passwordInput = page.locator('input#password, input[name="j_password"]').first();
-                await passwordInput.hover();
-                
-                console.log('Typing password with human delays...');
                 await passwordInput.click();
-                await page.keyboard.type(password, { delay: 120 });
+                await page.keyboard.type(password);
                 
-                console.log('Credentials filled successfully.');
                 await snap('credentials-filled');
 
                 const loginBtn = page.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen")').first();
-                await loginBtn.hover();
                 await snap('ready-to-click-login');
-                
-                console.log('Clicking the login button...');
                 await loginBtn.click();
                 
-                console.log('Waiting for navigation away from login page...');
-                await page.waitForTimeout(6000);
+                // Keep brief grace period for backend to register navigation
+                await page.waitForTimeout(4000);
                 await snap('after-login-attempt');
 
                 const currentUrl = page.url();
@@ -311,7 +289,7 @@ jobs:
                 console.log(`⚠️ Attempt ${attempt} encountered an error: ${err.message}`);
                 await context.close(); 
                 if (attempt === maxAttempts) throw err; 
-                await new Promise(resolve => setTimeout(resolve, 3000));
+                await new Promise(resolve => setTimeout(resolve, 1000));
               }
             }
 
@@ -340,10 +318,6 @@ jobs:
           path = "data/registered-emails.yml"
           email = os.environ.get("BOL_EMAIL")
 
-          if not email:
-              print("No email variable found. Skipping update.")
-              exit(1)
-
           with open(path, "r", encoding="utf-8") as f:
               data = yaml.safe_load(f) or []
 
@@ -360,10 +334,6 @@ jobs:
           if updated:
               with open(path, "w", encoding="utf-8") as f:
                   yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-              print(f"Successfully updated {email} in YAML file.")
-          else:
-              print(f"Failed to find {email} in registration list.")
-              exit(1)
           PY
 
       - name: Commit updated email list
@@ -394,7 +364,7 @@ jobs:
           set -euo pipefail
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d text="bol login failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
+            -d text="bol login failed%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Upload Auth State
         if: steps.playwright.outcome == 'success'
