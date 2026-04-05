@@ -17,7 +17,6 @@ jobs:
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
-      # Massive trace flags to show exactly what's happening
       DEBUG: "pw:api,pw:browser,pw:protocol"
 
     steps:
@@ -57,7 +56,7 @@ jobs:
 
           path = "data/registered-emails.yml"
           if not os.path.exists(path):
-              print("[FATAL ERROR] No registration file found at data/registered-emails.yml! Exiting.")
+              print("[FATAL ERROR] No registration file found!")
               exit(1)
 
           with open(path, "r", encoding="utf-8") as f:
@@ -97,7 +96,6 @@ jobs:
             }
           }
           EOF
-          echo "[INFO] package.json created."
 
           cat > playwright.config.js <<'EOF'
           const { defineConfig } = require('@playwright/test');
@@ -111,7 +109,6 @@ jobs:
             projects: [{ name: 'chromium' }]
           });
           EOF
-          echo "[INFO] playwright.config.js created."
 
       - name: "[System] Install Node Dependencies"
         shell: bash
@@ -179,8 +176,9 @@ jobs:
               await cookieBtn.click();
             }
 
-            console.log('[FLOW LOG] Clicking Inloggen element...');
-            await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click();
+            console.log('[FLOW LOG] Clicking Inloggen element with pointer override...');
+            // FORCED CLICK: This bypasses pointer event interception by overlays
+            await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click({ force: true });
             
             console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
             await page.waitForURL('**/wsp/login**', { timeout: 20000 });
