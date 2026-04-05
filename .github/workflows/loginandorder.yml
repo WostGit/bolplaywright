@@ -121,10 +121,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      - name: "[System] Install Playwright Chromium with deps"
+      # CONDITION 1: Fresh install everything if the cache misses
+      - name: "[System] Install Playwright Chromium with full deps (Cache Miss)"
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         shell: bash
         run: npx playwright install --with-deps chromium
+
+      # CONDITION 2: Only check and install OS libraries if cache lands successfully
+      - name: "[System] Verify Playwright OS dependencies only (Cache Hit)"
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: npx playwright install-deps chromium
 
       - name: "[Action] Execute Full Login and Cart Sequence"
         shell: bash
@@ -149,7 +156,6 @@ jobs:
             const maxAttempts = 3;
             let success = false;
 
-            // Helper to send photo to telegram
             async function sendTelegramAlert(filePath, caption) {
               if (!botToken || !chatId) {
                 console.log('[FLOW LOG] Skipping Telegram alert (credentials missing).');
@@ -158,10 +164,8 @@ jobs:
               try {
                 const { request } = require('@playwright/test');
                 const apiContext = await request.newContext();
-                
                 const fileBuffer = fs.readFileSync(filePath);
                 
-                // Form data manual construct for Playwright request
                 const response = await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
                   multipart: {
                     chat_id: chatId,
@@ -240,16 +244,13 @@ jobs:
                 
                 console.log('[FLOW LOG] Successfully logged in without CAPTCHA.');
 
-                // --- STAGE 3: SEARCH VIA DIRECT URL ---
                 console.log('[FLOW LOG] Navigating directly to EAN search results...');
                 const ean = '9300000035840899';
                 await page.goto(`https://www.bol.com/nl/nl/s/?searchtext=${ean}`, { waitUntil: 'domcontentloaded' });
                 
-                // --- STAGE 4: ADD TO CART ---
                 console.log('[FLOW LOG] Locating product link...');
                 const productTitleLink = page.locator('[data-test="product-title"]').first();
                 
-                // Let's shorten the timeout here. If it's not visible in 8s, trigger the screenshot!
                 await expect(productTitleLink).toBeVisible({ timeout: 8000 });
                 await productTitleLink.click();
 
@@ -268,7 +269,6 @@ jobs:
                 } else {
                   console.error(`[CRITICAL FAILURE] Attempt ${attempts} failed with error: ${err.message}`);
                   
-                  // Snap screenshot on failure and alert Telegram
                   const screenshotPath = `failure-attempt-${attempts}.png`;
                   await page.screenshot({ path: screenshotPath, fullPage: true });
                   
