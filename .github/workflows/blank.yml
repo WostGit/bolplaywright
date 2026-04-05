@@ -1,300 +1,624 @@
-- name: Create Playwright test
-  shell: bash
-  run: |
-    set -euo pipefail
-    mkdir -p tests
-    cat > tests/bol-register-smart.spec.js <<'EOF'
-    const { test, expect } = require('@playwright/test');
-    const fs = require('fs');
-    const path = require('path');
+name: Playwright Bol Register + Telegram Screenshots
 
-    test('register, store email, and find electronics item', async ({ page }, testInfo) => {
-      const screenshotDir = path.join(testInfo.outputDir, 'step-screenshots');
-      fs.mkdirSync(screenshotDir, { recursive: true });
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
 
-      let step = 1;
-      async function snap(name) {
-        const filename = `${String(step).padStart(2, '0')}-${name}.png`;
-        await page.screenshot({
-          path: path.join(screenshotDir, filename),
-          fullPage: true
-        });
-        step += 1;
-      }
+permissions:
+  contents: write
 
-      const formData = {
-        firstName: process.env.BOL_FIRST_NAME || '',
-        infix: process.env.BOL_INFIX || '',
-        lastName: process.env.BOL_LAST_NAME || '',
-        salutation: (process.env.BOL_SALUTATION || 'UNKNOWN').toUpperCase(),
-        countryMode: (process.env.BOL_COUNTRY_MODE || 'NL').toUpperCase(),
-        postalCode: (process.env.BOL_POSTAL_CODE || '').replace(/\s+/g, '').toUpperCase(),
-        streetNumber: process.env.BOL_STREET_NUMBER || '',
-        phone: process.env.BOL_PHONE || '',
-        birthday: process.env.BOL_BIRTHDAY || '',
-        email: process.env.BOL_EMAIL || '',
-        password: process.env.BOL_PASSWORD || '',
-        purchaseNewsletter: String(process.env.BOL_PURCHASE_NEWSLETTER || 'true').toLowerCase() === 'true',
-        recommendationNewsletter: String(process.env.BOL_RECOMMENDATION_NEWSLETTER || 'false').toLowerCase() === 'true',
-        submit: String(process.env.SUBMIT_FORM || 'false').toLowerCase() === 'true',
-        searchTerm: process.env.BOL_SEARCH_TERM || 'koptelefoon'
-      };
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
 
-      async function gotoWithRetry(url, attempts = 3) {
-        let lastErr;
-        for (let i = 1; i <= attempts; i++) {
-          try {
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            return;
-          } catch (err) {
-            lastErr = err;
-            await page.waitForTimeout(2000 * i);
+    env:
+      DATASET_URL: https://raw.githubusercontent.com/LJPc-solutions/Nederlandse-adressen-en-postcodes/main/Nederland.csv.zst
+      DATASET_DIR: .cache/nl-addresses
+      DATASET_FILE: .cache/nl-addresses/Nederland.csv.zst
+
+      BOL_SALUTATION: "UNKNOWN"
+      BOL_COUNTRY_MODE: "NL"
+      BOL_PURCHASE_NEWSLETTER: "true"
+      BOL_RECOMMENDATION_NEWSLETTER: "false"
+      SUBMIT_FORM: "true"
+      BOL_SEARCH_TERM: "koptelefoon"
+
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+      BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PROXY_SERVER" || { echo "Missing secret PROXY_SERVER"; exit 1; }
+          test -n "$PROXY_USERNAME" || { echo "Missing secret PROXY_USERNAME"; exit 1; }
+          test -n "$PROXY_PASSWORD" || { echo "Missing secret PROXY_PASSWORD"; exit 1; }
+          test -n "$BOL_PASSWORD" || { echo "Missing secret BOL_PASSWORD"; exit 1; }
+          test -n "$TELEGRAM_BOT_TOKEN" || { echo "Missing secret TELEGRAM_BOT_TOKEN"; exit 1; }
+          test -n "$TELEGRAM_CHAT_ID" || { echo "Missing secret TELEGRAM_CHAT_ID"; exit 1; }
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install zstandard
+
+      - name: Restore cached dataset
+        id: cache-dataset
+        uses: actions/cache@v4
+        with:
+          path: .cache/nl-addresses
+          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v8
+          restore-keys: |
+            ${{ runner.os }}-nl-addresses-ljpc-
+
+      - name: Download dataset on cache miss
+        if: steps.cache-dataset.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$DATASET_DIR"
+          curl -L --fail --retry 3 --retry-delay 2 \
+            -A "playwright-bol-register/1.0" \
+            "$DATASET_URL" \
+            -o "$DATASET_FILE"
+          ls -lh "$DATASET_FILE"
+
+      - name: Check proxy connectivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -I \
+            --proxy "$PROXY_SERVER" \
+            --proxy-user "$PROXY_USERNAME:$PROXY_PASSWORD" \
+            --max-time 25 \
+            --retry 2 \
+            --retry-delay 2 \
+            https://login.bol.com/wsp/register
+
+      - name: Generate identity and random Dutch address
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > random_nl_house.py <<'PY'
+          import csv
+          import io
+          import json
+          import os
+          import random
+          import re
+          import zstandard as zstd
+
+          DATASET_FILE = os.environ["DATASET_FILE"]
+
+          def random_address_from_local_zstd_csv(path: str) -> dict:
+              with open(path, "rb") as f:
+                  dctx = zstd.ZstdDecompressor()
+                  with dctx.stream_reader(f) as reader:
+                      text_stream = io.TextIOWrapper(reader, encoding="utf-8", newline="")
+                      csv_reader = csv.DictReader(text_stream, delimiter=";")
+                      chosen = None
+                      count = 0
+                      for row in csv_reader:
+                          straat = (row.get("straat") or "").strip()
+                          huisnummer = (row.get("huisnummer") or "").strip()
+                          postcode = (row.get("postcode") or "").strip()
+                          if not straat or not huisnummer or not postcode:
+                              continue
+                          count += 1
+                          if random.randrange(count) == 0:
+                              chosen = row
+                      if chosen is None:
+                          raise RuntimeError("No usable address rows found.")
+                      return chosen
+
+          def sanitize_email_part(value: str) -> str:
+              value = value.strip().lower()
+              replacements = {
+                  "á":"a","à":"a","ä":"a","â":"a",
+                  "é":"e","è":"e","ë":"e","ê":"e",
+                  "í":"i","ì":"i","ï":"i","î":"i",
+                  "ó":"o","ò":"o","ö":"o","ô":"o",
+                  "ú":"u","ù":"u","ü":"u","û":"u",
+                  "ç":"c","ñ":"n","ÿ":"y","ý":"y",
+                  "ĳ":"ij"
+              }
+              for src, dst in replacements.items():
+                  value = value.replace(src, dst)
+              value = re.sub(r"[^a-z0-9]", "", value)
+              return value
+
+          def normalize_pool(values, target_size=1000):
+              cleaned = [v.strip() for v in values if v and v.strip()]
+              if not cleaned:
+                  raise RuntimeError("Name pool is empty")
+              if len(cleaned) >= target_size:
+                  return cleaned[:target_size]
+              out = cleaned[:]
+              while len(out) < target_size:
+                  out.append(random.choice(cleaned))
+              return out
+
+          first_names = [
+              "Jan","Pieter","Kees","Henk","Hans","Johan","Peter","Paul","Mark","Bas","Bart","Tom","Tim","Ruben","Daan","Bram","Thijs","Niels","Koen","Jasper",
+              "Maarten","Martijn","Jeroen","Joost","Stefan","Sander","Wouter","Arjan","Erik","Michiel","Dirk","Gert","Rob","Robin","Dennis","Wim","Jelle","Tobias","Levi","Sem",
+              "Luuk","Milan","Noah","Liam","Finn","James","Lucas","Mats","Stijn","Tijs","Cas","Max","Sam","Mick","Ryan","Dylan","Jesse","Teun","Floris","Julian",
+              "Tijn","Olivier","Morris","Pepijn","Siem","Hugo","Benjamin","David","Daniel","Thomas","Vincent","Victor","Rik","Rens","Kaj","Tygo","Aiden","Melle","Sven","Jop",
+              "Aart","Ab","Abel","Ad","Adam","Adriaan","Adrie","Aldert","Alex","Alexander","Alfred","Ali","Andre","Anton","Arend","Arie","Arjen","Arnold","Arthur","Auke"
+          ]
+
+          last_names = [
+              "De Jong","Jansen","De Vries","Van den Berg","Van Dijk","Bakker","Janssen","Visser","Smit","Meijer","De Boer","Mulder","De Groot","Bos","Vos","Peters","Hendriks","Van Leeuwen","Dekker","Brouwer",
+              "De Wit","Dijkstra","Smits","De Graaf","Van der Meer","Jonker","Jacobs","Van Rijn","Van der Linden","Vermeulen","Post","Van Vliet","Kuiper","Groen","Schouten","Van Dam","Koster","Boot","Prins","Kok",
+              "Kramer","Sanders","Schipper","Van den Heuvel","Willems","Hermans","Van der Wal","Scholten","Wolters","Van Beek","Wouters","Hoekstra","Peeters","Van der Horst","Vink","Mol","Molenaar","De Bruijn","De Bruin","Van der Velden"
+          ]
+
+          first_names = normalize_pool(first_names, 1000)
+          last_names = normalize_pool(last_names, 1000)
+
+          first_name = random.choice(first_names)
+          last_name = random.choice(last_names)
+
+          row = random_address_from_local_zstd_csv(DATASET_FILE)
+          postcode = (row.get("postcode") or "").strip().replace(" ", "").upper()
+          huisnummer = (row.get("huisnummer") or "").strip()
+
+          phone = "06" + "".join(str(random.randint(0, 9)) for _ in range(8))
+          email = f"{sanitize_email_part(first_name)}{sanitize_email_part(last_name)}@qrlfoundation.org"
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f'BOL_FIRST_NAME={first_name}\n')
+              f.write('BOL_INFIX=\n')
+              f.write(f'BOL_LAST_NAME={last_name}\n')
+              f.write(f'BOL_PHONE={phone}\n')
+              f.write('BOL_BIRTHDAY=\n')
+              f.write(f'BOL_EMAIL={email}\n')
+              f.write(f'BOL_POSTAL_CODE={postcode}\n')
+              f.write(f'BOL_STREET_NUMBER={huisnummer}\n')
+          PY
+          python random_nl_house.py
+
+      - name: Create package.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > package.json <<'EOF'
+          {
+            "name": "playwright-bol-smart-register",
+            "private": true,
+            "devDependencies": {
+              "@playwright/test": "^1.54.0"
+            }
           }
-        }
-        throw lastErr;
-      }
+          EOF
 
-      async function waitForStable() {
-        await page.waitForTimeout(1000);
-        await page.waitForLoadState('networkidle').catch(() => {});
-      }
+      - name: Install Node dependencies
+        shell: bash
+        run: npm install
 
-      async function acceptCookiesIfPresent() {
-        const selectors = [
-          page.getByRole('button', { name: /accepteren/i }),
-          page.getByRole('button', { name: /alles accepteren/i }),
-          page.getByRole('button', { name: /accept all/i }),
-          page.getByRole('button', { name: /akkoord/i }),
-          page.locator('button:has-text("Accepteren")'),
-          page.locator('button:has-text("Alles accepteren")')
-        ];
+      - name: Install Playwright Chromium
+        shell: bash
+        run: npx playwright install --with-deps chromium
 
-        for (const locator of selectors) {
-          try {
-            if (await locator.first().isVisible({ timeout: 1200 })) {
-              await locator.first().click();
-              await page.waitForTimeout(800);
+      - name: Create Playwright config
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > playwright.config.js <<'EOF'
+          const { defineConfig, devices } = require('@playwright/test');
+
+          module.exports = defineConfig({
+            testDir: './tests',
+            timeout: 180000,
+            expect: { timeout: 15000 },
+            retries: process.env.CI ? 1 : 0,
+            reporter: [['html', { open: 'never' }], ['list']],
+            use: {
+              headless: true,
+              locale: 'nl-NL',
+              timezoneId: 'Europe/Amsterdam',
+              viewport: { width: 1366, height: 768 },
+              colorScheme: 'light',
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+              extraHTTPHeaders: {
+                'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8'
+              },
+              screenshot: 'only-on-failure',
+              trace: 'retain-on-failure',
+              video: 'retain-on-failure',
+              proxy: {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              }
+            },
+            projects: [
+              {
+                name: 'chromium',
+                use: { ...devices['Desktop Chrome'] }
+              }
+            ]
+          });
+          EOF
+
+      - name: Create Playwright test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tests
+          cat > tests/bol-register-smart.spec.js <<'EOF'
+          const { test, expect } = require('@playwright/test');
+          const fs = require('fs');
+          const path = require('path');
+
+          test('register and send screenshots', async ({ page }, testInfo) => {
+            const screenshotDir = path.join(testInfo.outputDir, 'step-screenshots');
+            fs.mkdirSync(screenshotDir, { recursive: true });
+
+            let step = 1;
+            async function snap(name) {
+              const file = path.join(screenshotDir, `${String(step).padStart(2, '0')}-${name}.png`);
+              await page.screenshot({ path: file, fullPage: true });
+              step += 1;
+              return file;
+            }
+
+            const formData = {
+              firstName: process.env.BOL_FIRST_NAME || '',
+              infix: process.env.BOL_INFIX || '',
+              lastName: process.env.BOL_LAST_NAME || '',
+              salutation: (process.env.BOL_SALUTATION || 'UNKNOWN').toUpperCase(),
+              countryMode: (process.env.BOL_COUNTRY_MODE || 'NL').toUpperCase(),
+              postalCode: (process.env.BOL_POSTAL_CODE || '').replace(/\s+/g, '').toUpperCase(),
+              streetNumber: process.env.BOL_STREET_NUMBER || '',
+              phone: process.env.BOL_PHONE || '',
+              birthday: process.env.BOL_BIRTHDAY || '',
+              email: process.env.BOL_EMAIL || '',
+              password: process.env.BOL_PASSWORD || '',
+              purchaseNewsletter: String(process.env.BOL_PURCHASE_NEWSLETTER || 'true').toLowerCase() === 'true',
+              recommendationNewsletter: String(process.env.BOL_RECOMMENDATION_NEWSLETTER || 'false').toLowerCase() === 'true',
+              submit: String(process.env.SUBMIT_FORM || 'false').toLowerCase() === 'true'
+            };
+
+            async function gotoWithRetry(url, attempts = 3) {
+              let lastErr;
+              for (let i = 1; i <= attempts; i++) {
+                try {
+                  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+                  return;
+                } catch (err) {
+                  lastErr = err;
+                  await page.waitForTimeout(2000 * i);
+                }
+              }
+              throw lastErr;
+            }
+
+            async function waitForStable() {
+              await page.waitForTimeout(1000);
+              await page.waitForLoadState('networkidle').catch(() => {});
+            }
+
+            async function acceptCookiesIfPresent() {
+              const selectors = [
+                page.getByRole('button', { name: /accepteren/i }),
+                page.getByRole('button', { name: /alles accepteren/i }),
+                page.getByRole('button', { name: /accept all/i }),
+                page.getByRole('button', { name: /akkoord/i }),
+                page.locator('button:has-text("Accepteren")'),
+                page.locator('button:has-text("Alles accepteren")')
+              ];
+              for (const locator of selectors) {
+                try {
+                  if (await locator.first().isVisible({ timeout: 1200 })) {
+                    await locator.first().click();
+                    await page.waitForTimeout(800);
+                    return true;
+                  }
+                } catch {}
+              }
+              return false;
+            }
+
+            async function fillByNameOrLabel(fieldNames, labelRegex, value) {
+              if (value === undefined || value === null) return false;
+              for (const name of fieldNames) {
+                const byName = page.locator(`[name="${name}"]`).first();
+                if (await byName.count()) {
+                  await byName.scrollIntoViewIfNeeded();
+                  await byName.fill('');
+                  await byName.fill(String(value));
+                  return true;
+                }
+              }
+              try {
+                const byLabel = page.getByLabel(labelRegex).first();
+                if (await byLabel.count()) {
+                  await byLabel.scrollIntoViewIfNeeded();
+                  await byLabel.fill('');
+                  await byLabel.fill(String(value));
+                  return true;
+                }
+              } catch {}
+              return false;
+            }
+
+            async function setCheckboxById(id, desired) {
+              const button = page.locator(`button#${id}[role="checkbox"]`).first();
+              if (!(await button.count())) return false;
+              const checked = (await button.getAttribute('aria-checked')) === 'true';
+              if (checked !== desired) {
+                await button.click();
+              }
               return true;
             }
-          } catch {}
-        }
-        return false;
-      }
 
-      async function fillByNameOrLabel(fieldNames, labelRegex, value) {
-        if (value === undefined || value === null) return false;
-        for (const name of fieldNames) {
-          const byName = page.locator(`[name="${name}"]`).first();
-          if (await byName.count()) {
-            await byName.scrollIntoViewIfNeeded();
-            await byName.fill('');
-            await byName.fill(String(value));
-            return true;
-          }
-        }
-        try {
-          const byLabel = page.getByLabel(labelRegex).first();
-          if (await byLabel.count()) {
-            await byLabel.scrollIntoViewIfNeeded();
-            await byLabel.fill('');
-            await byLabel.fill(String(value));
-            return true;
-          }
-        } catch {}
-        return false;
-      }
-
-      async function setCheckboxById(id, desired) {
-        const button = page.locator(`button#${id}[role="checkbox"]`).first();
-        if (!(await button.count())) return false;
-        const checked = (await button.getAttribute('aria-checked')) === 'true';
-        if (checked !== desired) {
-          await button.click();
-        }
-        return true;
-      }
-
-      async function selectSalutation(target) {
-        const radioButtons = page.locator('button[role="radio"]');
-        const count = await radioButtons.count();
-        for (let i = 0; i < count; i++) {
-          const btn = radioButtons.nth(i);
-          const value = ((await btn.getAttribute('value')) || '').toUpperCase();
-          const title = (await btn.getAttribute('title')) || '';
-          if (
-            value === target ||
-            (target === 'FEMALE' && /mevrouw/i.test(title)) ||
-            (target === 'MALE' && /heer/i.test(title)) ||
-            (target === 'UNKNOWN' && /liever geen/i.test(title))
-          ) {
-            await btn.click();
-            await page.waitForTimeout(300);
-            return true;
-          }
-        }
-        return false;
-      }
-
-      async function selectCountryTab(mode) {
-        const map = { NL: /nederland/i, BE: /belgië|belgie/i, WORLD: /wereld/i };
-        const tab = page.getByRole('tab', { name: map[mode] || map.NL }).first();
-        if (await tab.count()) {
-          await tab.click();
-          await page.waitForTimeout(800);
-          return true;
-        }
-        return false;
-      }
-
-      async function getAddressState() {
-        const street = await page.locator('[name="NLstreet"]').inputValue().catch(() => '');
-        const city = await page.locator('[name="NLcity"]').inputValue().catch(() => '');
-        const notFoundVisible = await page.locator('text=Geen adres gevonden').first().isVisible().catch(() => false);
-        return {
-          street: street.trim(),
-          city: city.trim(),
-          success: !!street.trim() && !!city.trim() && !notFoundVisible
-        };
-      }
-
-      async function detectCaptcha() {
-        const checks = [
-          page.locator('iframe[src*="recaptcha"]').first(),
-          page.locator('iframe[title*="reCAPTCHA"]').first(),
-          page.locator('[id*="captcha"]').first(),
-          page.locator('[class*="captcha"]').first(),
-          page.locator('text=/captcha/i').first(),
-          page.locator('text=/Ik ben geen robot/i').first(),
-          page.locator('text=/I am not a robot/i').first()
-        ];
-
-        for (const locator of checks) {
-          try {
-            if (await locator.isVisible({ timeout: 500 })) {
-              return true;
+            async function selectSalutation(target) {
+              const radioButtons = page.locator('button[role="radio"]');
+              const count = await radioButtons.count();
+              for (let i = 0; i < count; i++) {
+                const btn = radioButtons.nth(i);
+                const value = ((await btn.getAttribute('value')) || '').toUpperCase();
+                const title = (await btn.getAttribute('title')) || '';
+                if (
+                  value === target ||
+                  (target === 'FEMALE' && /mevrouw/i.test(title)) ||
+                  (target === 'MALE' && /heer/i.test(title)) ||
+                  (target === 'UNKNOWN' && /liever geen/i.test(title))
+                ) {
+                  await btn.click();
+                  await page.waitForTimeout(300);
+                  return true;
+                }
+              }
+              return false;
             }
-          } catch {}
-        }
 
-        const html = await page.content().catch(() => '');
-        return /recaptcha|captcha/i.test(html);
-      }
+            async function selectCountryTab(mode) {
+              const map = { NL: /nederland/i, BE: /belgië|belgie/i, WORLD: /wereld/i };
+              const tab = page.getByRole('tab', { name: map[mode] || map.NL }).first();
+              if (await tab.count()) {
+                await tab.click();
+                await page.waitForTimeout(800);
+                return true;
+              }
+              return false;
+            }
 
-      function parseEuro(text) {
-        if (!text) return null;
-        const cleaned = text.replace(/\./g, '').replace(',', '.').replace(/[^\d.]/g, '');
-        const value = Number.parseFloat(cleaned);
-        return Number.isFinite(value) ? value : null;
-      }
+            async function getAddressState() {
+              const street = await page.locator('[name="NLstreet"]').inputValue().catch(() => '');
+              const city = await page.locator('[name="NLcity"]').inputValue().catch(() => '');
+              const notFoundVisible = await page.locator('text=Geen adres gevonden').first().isVisible().catch(() => false);
+              return {
+                street: street.trim(),
+                city: city.trim(),
+                success: !!street.trim() && !!city.trim() && !notFoundVisible
+              };
+            }
 
-      async function findElectronicsItem() {
-        const candidates = page.locator('article, li, [data-test="product-item"], [data-testid="product-item"]');
-        const count = await candidates.count();
-        for (let i = 0; i < Math.min(count, 40); i++) {
-          const item = candidates.nth(i);
-          const text = await item.innerText().catch(() => '');
-          if (!text) continue;
-          const prices = text.match(/€\s*\d{1,3}(?:[.,]\d{2})?/g) || [];
-          const parsed = prices.map(parseEuro).filter(v => v !== null);
-          const inRange = parsed.find(v => v >= 90 && v <= 100);
-          if (inRange !== undefined) {
-            await item.scrollIntoViewIfNeeded();
-            const link = item.locator('a').first();
-            const title = (await link.textContent().catch(() => '')) || `item-${i + 1}`;
-            await snap('electronics-item-found');
-            await testInfo.attach('electronics-item.json', {
-              body: Buffer.from(JSON.stringify({ title, price: inRange, text }, null, 2)),
-              contentType: 'application/json'
+            async function detectCaptcha() {
+              const checks = [
+                page.locator('iframe[src*="recaptcha"]').first(),
+                page.locator('iframe[title*="reCAPTCHA"]').first(),
+                page.locator('[id*="captcha"]').first(),
+                page.locator('[class*="captcha"]').first(),
+                page.locator('text=/captcha/i').first(),
+                page.locator('text=/Ik ben geen robot/i').first(),
+                page.locator('text=/I am not a robot/i').first()
+              ];
+              for (const locator of checks) {
+                try {
+                  if (await locator.isVisible({ timeout: 500 })) return true;
+                } catch {}
+              }
+              const html = await page.content().catch(() => '');
+              return /recaptcha|captcha/i.test(html);
+            }
+
+            await gotoWithRetry('https://login.bol.com/wsp/register', 3);
+            await waitForStable();
+            await acceptCookiesIfPresent();
+            await snap('opened-register-page');
+
+            await expect(page.locator('form')).toBeVisible();
+
+            const salutationSelected = await selectSalutation(formData.salutation);
+            if (!salutationSelected) {
+              throw new Error(`Could not select gender/salutation: ${formData.salutation}`);
+            }
+            await snap('gender-selected');
+
+            await fillByNameOrLabel(['firstName'], /voornaam/i, formData.firstName);
+            if (formData.infix) await fillByNameOrLabel(['infix'], /tussenvoegsel/i, formData.infix);
+            await fillByNameOrLabel(['lastName'], /achternaam/i, formData.lastName);
+            await snap('name-filled');
+
+            await selectCountryTab(formData.countryMode);
+            await snap('country-selected');
+
+            await fillByNameOrLabel(['NLpostalCode'], /postcode/i, formData.postalCode);
+            await fillByNameOrLabel(['NLstreetNumber'], /huisnummer/i, formData.streetNumber);
+            await snap('address-entered');
+
+            await page.waitForTimeout(2500);
+            const addressState = await getAddressState();
+            if (!addressState.success) {
+              throw new Error(`Dataset address was rejected by bol. postcode=${formData.postalCode} huisnummer=${formData.streetNumber}`);
+            }
+
+            await fillByNameOrLabel(['phone'], /telefoonnummer/i, formData.phone);
+            if (formData.birthday) await fillByNameOrLabel(['birthday'], /geboortedatum/i, formData.birthday);
+            await snap('contact-filled');
+
+            await fillByNameOrLabel(['email'], /email/i, formData.email);
+            await fillByNameOrLabel(['password'], /wachtwoord/i, formData.password);
+            await snap('credentials-filled');
+
+            await setCheckboxById('purchaseNewsletter', formData.purchaseNewsletter);
+            await setCheckboxById('recommendationNewsletter', formData.recommendationNewsletter);
+
+            const beforePath = await snap('before-registration');
+            process.env.BEFORE_REGISTRATION_SCREENSHOT = beforePath;
+            await testInfo.attach('before-registration-path.txt', {
+              body: Buffer.from(beforePath),
+              contentType: 'text/plain'
             });
-            return { found: true, title: title.trim(), price: inRange };
+
+            const captchaPresent = await detectCaptcha();
+            if (captchaPresent) {
+              await snap('captcha-detected-before-register');
+              throw new Error('Captcha detected before registration. Stopping for manual intervention.');
+            }
+
+            if (formData.submit) {
+              const submitButton = page.getByRole('button', { name: /registreer/i }).first();
+              await submitButton.scrollIntoViewIfNeeded();
+              await page.waitForTimeout(500);
+              await submitButton.click();
+              await page.waitForTimeout(4000);
+            }
+
+            const afterPath = await snap('after-registration');
+            await testInfo.attach('after-registration-path.txt', {
+              body: Buffer.from(afterPath),
+              contentType: 'text/plain'
+            });
+          });
+          EOF
+
+      - name: Run Playwright test
+        shell: bash
+        run: npx playwright test
+
+      - name: Persist registered email in repo
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python <<'PY'
+          import json, os
+          path = "data/registered-emails.json"
+          entry = {
+              "email": os.environ["BOL_EMAIL"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow": os.environ["GITHUB_WORKFLOW"]
           }
-        }
-        return { found: false };
-      }
+          try:
+              with open(path, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except FileNotFoundError:
+              data = []
+          if not isinstance(data, list):
+              data = []
+          data.append(entry)
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(data, f, indent=2, ensure_ascii=False)
+          PY
 
-      await gotoWithRetry('https://login.bol.com/wsp/register', 3);
-      await waitForStable();
-      await acceptCookiesIfPresent();
-      await snap('opened-register-page');
+      - name: Commit registered email list
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/registered-emails.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Store registered email for run $GITHUB_RUN_ID"
+          git push
 
-      await expect(page.locator('form')).toBeVisible();
+      - name: Send Telegram success message
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="bol account workflow succeeded%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
 
-      const salutationSelected = await selectSalutation(formData.salutation);
-      if (!salutationSelected) {
-        throw new Error(`Could not select gender/salutation: ${formData.salutation}`);
-      }
-      await snap('gender-selected');
+      - name: Send before-registration screenshot to Telegram
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=$(find test-results -type f -name '*before-registration*.png' | head -n 1 || true)
+          if [ -n "${FILE:-}" ]; then
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" \
+              -F chat_id="${TELEGRAM_CHAT_ID}" \
+              -F photo=@"$FILE" \
+              -F caption="Before registration screenshot"
+          fi
 
-      await fillByNameOrLabel(['firstName'], /voornaam/i, formData.firstName);
-      if (formData.infix) await fillByNameOrLabel(['infix'], /tussenvoegsel/i, formData.infix);
-      await fillByNameOrLabel(['lastName'], /achternaam/i, formData.lastName);
-      await snap('name-filled');
+      - name: Send after-registration screenshot to Telegram
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=$(find test-results -type f -name '*after-registration*.png' | head -n 1 || true)
+          if [ -n "${FILE:-}" ]; then
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" \
+              -F chat_id="${TELEGRAM_CHAT_ID}" \
+              -F photo=@"$FILE" \
+              -F caption="After registration screenshot"
+          fi
 
-      await selectCountryTab(formData.countryMode);
-      await snap('country-selected');
+      - name: Send Telegram failure message
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="bol account workflow failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-      await fillByNameOrLabel(['NLpostalCode'], /postcode/i, formData.postalCode);
-      await fillByNameOrLabel(['NLstreetNumber'], /huisnummer/i, formData.streetNumber);
-      await snap('address-entered');
+      - name: Upload registered emails file
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registered-emails
+          path: data/registered-emails.json
+          if-no-files-found: warn
+          retention-days: 14
 
-      await page.waitForTimeout(2500);
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
 
-      const addressState = await getAddressState();
-      if (!addressState.success) {
-        throw new Error(`Dataset address was rejected by bol. postcode=${formData.postalCode} huisnummer=${formData.streetNumber}`);
-      }
-
-      await fillByNameOrLabel(['phone'], /telefoonnummer/i, formData.phone);
-      if (formData.birthday) await fillByNameOrLabel(['birthday'], /geboortedatum/i, formData.birthday);
-      await snap('contact-filled');
-
-      await fillByNameOrLabel(['email'], /email/i, formData.email);
-      await fillByNameOrLabel(['password'], /wachtwoord/i, formData.password);
-      await snap('credentials-filled');
-
-      await setCheckboxById('purchaseNewsletter', formData.purchaseNewsletter);
-      await setCheckboxById('recommendationNewsletter', formData.recommendationNewsletter);
-      await snap('before-submit');
-
-      const captchaPresent = await detectCaptcha();
-      if (captchaPresent) {
-        await snap('captcha-detected-before-register');
-        await testInfo.attach('captcha-detected.json', {
-          body: Buffer.from(JSON.stringify({
-            email: formData.email,
-            stage: 'before-register',
-            detected: true
-          }, null, 2)),
-          contentType: 'application/json'
-        });
-        throw new Error('Captcha detected before registration. Stopping for manual intervention.');
-      }
-
-      if (formData.submit) {
-        const submitButton = page.getByRole('button', { name: /registreer/i }).first();
-        await submitButton.scrollIntoViewIfNeeded();
-        await page.waitForTimeout(500);
-        await submitButton.click();
-        await page.waitForTimeout(4000);
-        await snap('after-submit');
-      }
-
-      await gotoWithRetry(`https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(formData.searchTerm)}`, 3);
-      await waitForStable();
-      await acceptCookiesIfPresent();
-      await snap('search-results-page');
-
-      const electronicsResult = await findElectronicsItem();
-      if (!electronicsResult.found) {
-        throw new Error('No electronics item found in the €90-€100 range.');
-      }
-
-      await testInfo.attach('registration-result.json', {
-        body: Buffer.from(JSON.stringify({
-          email: formData.email,
-          electronicsResult
-        }, null, 2)),
-        contentType: 'application/json'
-      });
-    });
-    EOF
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 14
