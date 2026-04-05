@@ -17,5 +17,12 @@
     "repository": "WostGit/bolplaywright",
     "workflow": "Playwright Bol Registration Only",
     "used_to_login": false
+  },
+  {
+    "email": "danielsmits@qrlfoundation.org",
+    "run_id": "24000380833",
+    "repository": "WostGit/bolplaywright",
+    "workflow": "Playwright Bol Registration Only",
+    "used_to_login": false
   }
 ]
