@@ -341,6 +341,30 @@ jobs:
               await page.waitForLoadState('networkidle').catch(() => {});
             }
 
+            async function acceptCookiesIfPresent() {
+              const selectors = [
+                page.getByRole('button', { name: /accepteren/i }),
+                page.getByRole('button', { name: /alles accepteren/i }),
+                page.getByRole('button', { name: /accept all/i }),
+                page.getByRole('button', { name: /akkoord/i }),
+                page.locator('button:has-text("Accepteren")'),
+                page.locator('button:has-text("Alles accepteren")'),
+                page.locator('[id*="accept"]'),
+                page.locator('[data-test*="accept"]')
+              ];
+
+              for (const locator of selectors) {
+                try {
+                  if (await locator.first().isVisible({ timeout: 1200 })) {
+                    await locator.first().click();
+                    await page.waitForTimeout(800);
+                    return true;
+                  }
+                } catch {}
+              }
+              return false;
+            }
+
             async function fillByNameOrLabel(fieldNames, labelRegex, value) {
               if (value === undefined || value === null) return false;
               for (const name of fieldNames) {
@@ -388,6 +412,7 @@ jobs:
                   (target === 'UNKNOWN' && /liever geen/i.test(title))
                 ) {
                   await btn.click();
+                  await page.waitForTimeout(300);
                   return true;
                 }
               }
@@ -418,10 +443,7 @@ jobs:
 
             function parseEuro(text) {
               if (!text) return null;
-              const cleaned = text
-                .replace(/\./g, '')
-                .replace(',', '.')
-                .replace(/[^\d.]/g, '');
+              const cleaned = text.replace(/\./g, '').replace(',', '.').replace(/[^\d.]/g, '');
               const value = Number.parseFloat(cleaned);
               return Number.isFinite(value) ? value : null;
             }
@@ -452,10 +474,16 @@ jobs:
             }
 
             await gotoWithRetry('https://login.bol.com/wsp/register', 3);
-            await expect(page.locator('form')).toBeVisible();
+            await waitForStable();
+            await acceptCookiesIfPresent();
             await snap('opened-register-page');
 
-            await selectSalutation(formData.salutation);
+            await expect(page.locator('form')).toBeVisible();
+
+            const salutationSelected = await selectSalutation(formData.salutation);
+            if (!salutationSelected) {
+              throw new Error(`Could not select gender/salutation: ${formData.salutation}`);
+            }
             await snap('gender-selected');
 
             await fillByNameOrLabel(['firstName'], /voornaam/i, formData.firstName);
@@ -500,6 +528,7 @@ jobs:
 
             await gotoWithRetry(`https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(formData.searchTerm)}`, 3);
             await waitForStable();
+            await acceptCookiesIfPresent();
             await snap('search-results-page');
 
             const electronicsResult = await findElectronicsItem();
