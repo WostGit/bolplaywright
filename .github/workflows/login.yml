@@ -282,6 +282,7 @@ jobs:
           EOF
 
       - name: Run Playwright test
+        id: playwright
         shell: bash
         run: xvfb-run npx playwright test
 
@@ -291,7 +292,6 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Check if there are any screenshots to upload
           if [ ! -d "login-screenshots" ] || [ -z "$(ls -A login-screenshots/*.png 2>/dev/null)" ]; then
             echo "No screenshots found to upload."
             exit 0
@@ -299,7 +299,6 @@ jobs:
           
           echo "Found screenshots. Sending to Telegram..."
           
-          # We send images one by one or in small bursts to respect Telegram's API
           for img in login-screenshots/*.png; do
             filename=$(basename "$img")
             echo "Uploading $filename..."
@@ -307,11 +306,11 @@ jobs:
                  -F photo="@$img" \
                  -F caption="Step: $filename" \
                  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" > /dev/null
-            sleep 1 # Avoid rate-limiting
+            sleep 1
           done
 
       - name: Update YAML file on successful login
-        if: success()
+        if: steps.playwright.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -350,7 +349,7 @@ jobs:
           PY
 
       - name: Commit updated email list
-        if: success()
+        if: steps.playwright.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -362,7 +361,7 @@ jobs:
           git push
 
       - name: Send Telegram success message
-        if: success() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        if: steps.playwright.outcome == 'success' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -371,7 +370,7 @@ jobs:
             -d text="bol login succeeded%0ARepo: ${{ github.repository }}%0AEmail: ${BOL_EMAIL}"
 
       - name: Send Telegram failure message
-        if: failure() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        if: steps.playwright.outcome != 'success' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
         run: |
           set -euo pipefail
