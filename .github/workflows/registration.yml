@@ -29,7 +29,6 @@ jobs:
       BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      REGISTERED_EMAILS_FILE: data/registered-emails.json
 
     steps:
       - name: Checkout
@@ -68,8 +67,6 @@ jobs:
         with:
           path: .cache/nl-addresses
           key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v11
-          restore-keys: |
-            ${{ runner.os }}-nl-addresses-ljpc-
 
       - name: Download dataset on cache miss
         if: steps.cache-dataset.outputs.cache-hit != 'true'
@@ -79,24 +76,12 @@ jobs:
           curl -L --fail --retry 3 --retry-delay 2 \
             -A "playwright-bol-register/1.0" \
             "$DATASET_URL" -o "$DATASET_FILE"
-          ls -lh "$DATASET_FILE"
-
-      - name: Check proxy connectivity
-        shell: bash
-        run: |
-          curl -I --proxy "$PROXY_SERVER" --proxy-user "$PROXY_USERNAME:$PROXY_PASSWORD" \
-            --max-time 25 --retry 2 https://login.bol.com/wsp/register
 
       - name: Generate identity and random Dutch address
         shell: bash
         run: |
           cat > random_nl_house.py <<'PY'
-          import csv
-          import io
-          import os
-          import random
-          import re
-          import zstandard as zstd
+          import csv, io, os, random, re, zstandard as zstd
           DATASET_FILE = os.environ["DATASET_FILE"]
           def random_address_from_local_zstd_csv(path: str) -> dict:
               with open(path, "rb") as f:
@@ -107,73 +92,38 @@ jobs:
                       chosen = None
                       count = 0
                       for row in csv_reader:
-                          straat = (row.get("straat") or "").strip()
-                          huisnummer = (row.get("huisnummer") or "").strip()
-                          postcode = (row.get("postcode") or "").strip()
-                          if not straat or not huisnummer or not postcode:
-                              continue
+                          if not all((row.get(k) or "").strip() for k in ["straat","huisnummer","postcode"]): continue
                           count += 1
                           if random.randrange(count) == 0:
                               chosen = row
-                      if chosen is None:
-                          raise RuntimeError("No usable address rows found.")
                       return chosen
           def sanitize_email_part(value: str) -> str:
               value = value.strip().lower()
-              replacements = {"á":"a","à":"a","ä":"a","â":"a","é":"e","è":"e","ë":"e","ê":"e","í":"i","ì":"i","ï":"i","î":"i","ó":"o","ò":"o","ö":"o","ô":"o","ú":"u","ù":"u","ü":"u","û":"u","ç":"c","ñ":"n","ÿ":"y","ý":"y","ĳ":"ij"}
-              for src, dst in replacements.items():
-                  value = value.replace(src, dst)
-              value = re.sub(r"[^a-z0-9]", "", value)
-              return value
-          def normalize_pool(values, target_size=1000):
-              cleaned = [v.strip() for v in values if v and v.strip()]
-              if not cleaned: raise RuntimeError("Name pool is empty")
-              if len(cleaned) >= target_size: return cleaned[:target_size]
-              out = cleaned[:]
-              while len(out) < target_size:
-                  out.append(random.choice(cleaned))
-              return out
-          first_names = ["Jan","Pieter","Kees","Henk","Hans","Johan","Peter","Paul","Mark","Bas","Bart","Tom","Tim","Ruben","Daan","Bram","Thijs","Niels","Koen","Jasper","Maarten","Martijn","Jeroen","Joost","Stefan","Sander","Wouter","Arjan","Erik","Michiel","Dirk","Gert","Rob","Robin","Dennis","Wim","Jelle","Tobias","Levi","Sem","Luuk","Milan","Noah","Liam","Finn","James","Lucas","Mats","Stijn","Tijs","Cas","Max","Sam","Mick","Ryan","Dylan","Jesse","Teun","Floris","Julian","Tijn","Olivier","Morris","Pepijn","Siem","Hugo","Benjamin","David","Daniel","Thomas","Vincent","Victor","Rik","Rens","Kaj","Tygo","Aiden","Melle","Sven","Jop"]
-          last_names = ["De Jong","Jansen","De Vries","Van den Berg","Van Dijk","Bakker","Janssen","Visser","Smit","Meijer","De Boer","Mulder","De Groot","Bos","Vos","Peters","Hendriks","Van Leeuwen","Dekker","Brouwer","De Wit","Dijkstra","Smits","De Graaf","Van der Meer","Jonker","Jacobs","Van Rijn","Van der Linden","Vermeulen","Post","Van Vliet","Kuiper","Groen","Schouten","Van Dam","Koster","Boot","Prins","Kok","Kramer","Sanders","Schipper","Van den Heuvel","Willems","Hermans","Van der Wal","Scholten","Wolters","Van Beek","Wouters","Hoekstra","Peeters","Van der Horst","Vink","Mol","Molenaar","De Bruijn","De Bruin","Van der Velden"]
-          first_names = normalize_pool(first_names, 1000)
-          last_names = normalize_pool(last_names, 1000)
+              replacements = {"á":"a","é":"e","í":"i","ó":"o","ú":"u","ç":"c","ñ":"n","ĳ":"ij"}
+              for src, dst in replacements.items(): value = value.replace(src, dst)
+              return re.sub(r"[^a-z0-9]", "", value)
+          first_names = ["Jan","Pieter","Kees","Henk","Hans","Johan","Peter","Paul","Mark","Bas","Bart","Tom","Tim","Ruben","Daan","Bram","Thijs","Niels","Koen","Jasper"]
+          last_names = ["De Jong","Jansen","De Vries","Van den Berg","Van Dijk","Bakker","Janssen","Visser","Smit","Meijer"]
           first_name = random.choice(first_names)
           last_name = random.choice(last_names)
           row = random_address_from_local_zstd_csv(DATASET_FILE)
           postcode = (row.get("postcode") or "").strip().replace(" ", "").upper()
           huisnummer = (row.get("huisnummer") or "").strip()
-          phone = "06" + "".join(str(random.randint(0, 9)) for _ in range(8))
+          phone = "06" + "".join(str(random.randint(0,9)) for _ in range(8))
           email = f"{sanitize_email_part(first_name)}{sanitize_email_part(last_name)}@qrlfoundation.org"
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-              f.write(f'BOL_FIRST_NAME={first_name}\n')
-              f.write('BOL_INFIX=\n')
-              f.write(f'BOL_LAST_NAME={last_name}\n')
-              f.write(f'BOL_PHONE={phone}\n')
-              f.write('BOL_BIRTHDAY=\n')
-              f.write(f'BOL_EMAIL={email}\n')
-              f.write(f'BOL_POSTAL_CODE={postcode}\n')
-              f.write(f'BOL_STREET_NUMBER={huisnummer}\n')
+              f.write(f'BOL_FIRST_NAME={first_name}\nBOL_LAST_NAME={last_name}\nBOL_PHONE={phone}\nBOL_EMAIL={email}\nBOL_POSTAL_CODE={postcode}\nBOL_STREET_NUMBER={huisnummer}\n')
           PY
           python random_nl_house.py
 
-      - name: Create package.json
+      - name: Create package.json & Install
         shell: bash
         run: |
           cat > package.json <<'EOF'
-          {
-            "name": "playwright-bol-registration-only",
-            "private": true,
-            "devDependencies": { "@playwright/test": "^1.54.0" }
-          }
+          {"name": "bol-register","private": true,"devDependencies": {"@playwright/test": "^1.54.0"}}
           EOF
-
-      - name: Install Node dependencies
-        shell: bash
-        run: npm install
-
-      - name: Install Playwright Chromium
-        shell: bash
-        run: npx playwright install --with-deps chromium
+          npm install
+          npx playwright install --with-deps chromium
 
       - name: Create Playwright config
         shell: bash
@@ -183,31 +133,21 @@ jobs:
           module.exports = defineConfig({
             testDir: './tests',
             timeout: 240000,
-            expect: { timeout: 15000 },
-            retries: process.env.CI ? 1 : 0,
-            reporter: [['html', { open: 'never' }], ['list']],
+            retries: 1,
             use: {
               headless: true,
               locale: 'nl-NL',
               timezoneId: 'Europe/Amsterdam',
               viewport: { width: 1366, height: 768 },
-              colorScheme: 'light',
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-              extraHTTPHeaders: { 'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8' },
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              proxy: { server: process.env.PROXY_SERVER, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD },
               screenshot: 'only-on-failure',
-              trace: 'retain-on-failure',
-              video: 'retain-on-failure',
-              proxy: {
-                server: process.env.PROXY_SERVER,
-                username: process.env.PROXY_USERNAME,
-                password: process.env.PROXY_PASSWORD
-              }
-            },
-            projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
+              video: 'retain-on-failure'
+            }
           });
           EOF
 
-      - name: Create Playwright test
+      - name: Create Playwright Registration Test (with Gender Selection)
         shell: bash
         run: |
           mkdir -p tests
@@ -216,118 +156,72 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('registration only with screenshots on every step', async ({ page }, testInfo) => {
-            const screenshotDir = path.join(testInfo.outputDir, 'step-screenshots');
+          test('bol.com registration with gender', async ({ page }, testInfo) => {
+            const screenshotDir = path.join(testInfo.outputDir, 'screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
             let step = 1;
             async function snap(name) {
-              const file = path.join(screenshotDir, `${String(step).padStart(2, '0')}-${name}.png`);
-              await page.screenshot({ path: file, fullPage: true });
-              step += 1;
+              await page.screenshot({ path: path.join(screenshotDir, `${String(step++).padStart(2,'0')}-${name}.png`), fullPage: true });
             }
 
             const formData = {
-              firstName: process.env.BOL_FIRST_NAME || '',
-              infix: process.env.BOL_INFIX || '',
-              lastName: process.env.BOL_LAST_NAME || '',
-              salutation: (process.env.BOL_SALUTATION || 'UNKNOWN').toUpperCase(),
-              countryMode: (process.env.BOL_COUNTRY_MODE || 'NL').toUpperCase(),
-              postalCode: (process.env.BOL_POSTAL_CODE || '').replace(/\s+/g, '').toUpperCase(),
-              streetNumber: process.env.BOL_STREET_NUMBER || '',
-              phone: process.env.BOL_PHONE || '',
-              birthday: process.env.BOL_BIRTHDAY || '',
-              email: process.env.BOL_EMAIL || '',
-              password: process.env.BOL_PASSWORD || '',
-              purchaseNewsletter: String(process.env.BOL_PURCHASE_NEWSLETTER || 'true').toLowerCase() === 'true',
-              recommendationNewsletter: String(process.env.BOL_RECOMMENDATION_NEWSLETTER || 'false').toLowerCase() === 'true',
-              submit: String(process.env.SUBMIT_FORM || 'false').toLowerCase() === 'true'
+              firstName: process.env.BOL_FIRST_NAME,
+              lastName: process.env.BOL_LAST_NAME,
+              email: process.env.BOL_EMAIL,
+              password: process.env.BOL_PASSWORD,
+              postalCode: process.env.BOL_POSTAL_CODE,
+              streetNumber: process.env.BOL_STREET_NUMBER,
+              phone: process.env.BOL_PHONE,
+              salutation: process.env.BOL_SALUTATION || 'UNKNOWN'
             };
 
-            async function gotoWithRetry(url, attempts = 3) {
-              let lastErr;
-              for (let i = 1; i <= attempts; i++) {
-                try {
-                  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-                  return;
-                } catch (err) {
-                  lastErr = err;
-                  await page.waitForTimeout(2000 * i);
-                }
+            await page.goto('https://login.bol.com/wsp/register', { waitUntil: 'domcontentloaded' });
+            await snap('01-register-page');
+
+            // === GENDER / SALUTATION SELECTION ===
+            const genderButtons = page.locator('button[role="radio"], button[title*="heer"], button[title*="mevrouw"], button[title*="liever geen"]');
+            const count = await genderButtons.count();
+            let selected = false;
+            for (let i = 0; i < count; i++) {
+              const btn = genderButtons.nth(i);
+              const title = (await btn.getAttribute('title') || '').toLowerCase();
+              if (formData.salutation === 'UNKNOWN' && /liever geen/i.test(title)) {
+                await btn.click();
+                selected = true;
+                break;
+              } else if (title.includes('heer') || title.includes('mevrouw')) {
+                await btn.click();
+                selected = true;
+                break;
               }
-              throw lastErr;
             }
-
-            async function waitForStable() {
-              await page.waitForTimeout(1000);
-              await page.waitForLoadState('networkidle').catch(() => {});
+            if (!selected) {
+              // Fallback: click first available
+              await genderButtons.first().click();
             }
+            await snap('02-gender-selected');
 
-            async function acceptCookiesIfPresent() {
-              const selectors = [
-                page.getByRole('button', { name: /accepteren|alles accepteren|akkoord/i }),
-                page.locator('button:has-text("Accepteren")')
-              ];
-              for (const locator of selectors) {
-                try {
-                  if (await locator.first().isVisible({ timeout: 1500 })) {
-                    await locator.first().click();
-                    await page.waitForTimeout(800);
-                    return true;
-                  }
-                } catch {}
-              }
-              return false;
-            }
+            // Fill form
+            await page.getByLabel(/voornaam/i).fill(formData.firstName);
+            await page.getByLabel(/achternaam/i).fill(formData.lastName);
+            await snap('03-names-filled');
 
-            async function fillByNameOrLabel(fieldNames, labelRegex, value) {
-              if (!value) return false;
-              for (const name of fieldNames) {
-                const byName = page.locator(`[name="${name}"]`).first();
-                if (await byName.count()) {
-                  await byName.fill(String(value));
-                  return true;
-                }
-              }
-              try {
-                const byLabel = page.getByLabel(labelRegex).first();
-                if (await byLabel.count()) {
-                  await byLabel.fill(String(value));
-                  return true;
-                }
-              } catch {}
-              return false;
-            }
-
-            await gotoWithRetry('https://login.bol.com/wsp/register', 3);
-            await waitForStable();
-            await snap('01-opened-register-page');
-            await acceptCookiesIfPresent();
-            await snap('02-after-cookie-check');
-
-            await fillByNameOrLabel(['firstName'], /voornaam/i, formData.firstName);
-            await snap('03-first-name-filled');
-            await fillByNameOrLabel(['lastName'], /achternaam/i, formData.lastName);
-            await snap('04-last-name-filled');
-
-            await fillByNameOrLabel(['NLpostalCode'], /postcode/i, formData.postalCode);
-            await fillByNameOrLabel(['NLstreetNumber'], /huisnummer/i, formData.streetNumber);
+            await page.getByLabel(/postcode/i).fill(formData.postalCode);
+            await page.getByLabel(/huisnummer/i).fill(formData.streetNumber);
             await page.waitForTimeout(2500);
-            await snap('05-address-filled');
+            await snap('04-address-filled');
 
-            await fillByNameOrLabel(['phone'], /telefoonnummer/i, formData.phone);
-            await snap('06-phone-filled');
+            await page.getByLabel(/telefoonnummer/i).fill(formData.phone);
+            await page.getByLabel(/e-mailadres/i).fill(formData.email);
+            await page.getByLabel(/wachtwoord/i).fill(formData.password);
+            await snap('05-credentials-filled');
 
-            await fillByNameOrLabel(['email'], /email/i, formData.email);
-            await fillByNameOrLabel(['password'], /wachtwoord/i, formData.password);
-            await snap('07-credentials-filled');
-
-            if (formData.submit) {
-              const submitButton = page.getByRole('button', { name: /registreer/i }).first();
-              await submitButton.scrollIntoViewIfNeeded();
-              await submitButton.click();
-              await page.waitForTimeout(5000);
-            }
-            await snap('08-after-registration');
+            // Submit
+            const submitBtn = page.getByRole('button', { name: /registreer|aanmaken/i }).first();
+            await submitBtn.scrollIntoViewIfNeeded();
+            await submitBtn.click();
+            await page.waitForTimeout(6000);
+            await snap('06-submitted');
           });
           EOF
 
@@ -335,7 +229,7 @@ jobs:
         shell: bash
         run: npx playwright test
 
-      - name: Persist registered email in repo
+      - name: Persist registered email
         if: always()
         shell: bash
         run: |
@@ -345,30 +239,18 @@ jobs:
           path = "data/registered-emails.json"
           email = os.environ.get("BOL_EMAIL", "").strip()
           if not email: exit(0)
-
-          entry = {
-              "email": email,
-              "registered_at": os.environ.get("GITHUB_RUN_ID"),
-              "used_to_login": False,
-              "login_count": 0,
-              "last_login": None
-          }
-
+          entry = {"email": email, "registered_at": os.environ.get("GITHUB_RUN_ID"), "used_to_login": False, "login_count": 0, "last_login": None}
           try:
-              with open(path, "r", encoding="utf-8") as f:
-                  data = json.load(f)
+              with open(path, "r", encoding="utf-8") as f: data = json.load(f)
               if not isinstance(data, list): data = []
-          except:
-              data = []
-
-          if not any(acc.get("email") == email for acc in data):
+          except: data = []
+          if not any(a.get("email") == email for a in data):
               data.append(entry)
-
           with open(path, "w", encoding="utf-8") as f:
               json.dump(data, f, indent=2, ensure_ascii=False)
           PY
 
-      - name: Commit registered email list
+      - name: Commit registered email
         if: always()
         shell: bash
         run: |
@@ -376,13 +258,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/registered-emails.json
           git diff --cached --quiet && exit 0
-          git commit -m "Add newly registered email - run $GITHUB_RUN_ID"
+          git commit -m "Add registered email - run $GITHUB_RUN_ID"
           git push
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: registration-results
-          path: test-results/
-          retention-days: 14
