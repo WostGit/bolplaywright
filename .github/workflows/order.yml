@@ -1,10 +1,13 @@
-name: Playwright Bol Login & Add to Cart
+name: Playwright Bol Add to Cart
 on:
   workflow_dispatch:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  # ADDED: This allows it to be triggered automatically by the login workflow
+  repository_dispatch:
+    types: [login_complete]
 
 permissions:
   contents: read
@@ -21,7 +24,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: playwright-state
-          path: .
+          path: ./ # FIXED: Forces it to extract directly into the project root instead of a subfolder
         continue-on-error: true
 
       - name: Create package.json
