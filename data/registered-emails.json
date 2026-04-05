@@ -10,5 +10,12 @@
     "run_id": "23999737613",
     "repository": "WostGit/bolplaywright",
     "workflow": "Playwright Bol Register + Login + Computer Search"
+  },
+  {
+    "email": "liamvanvliet@qrlfoundation.org",
+    "run_id": "24000272380",
+    "repository": "WostGit/bolplaywright",
+    "workflow": "Playwright Bol Registration Only",
+    "used_to_login": false
   }
 ]
