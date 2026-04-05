@@ -111,7 +111,6 @@ jobs:
         shell: bash
         run: npm install
 
-      # NEW STEP: Caches browsers based on your package.json version
       - name: "[System] Cache Playwright browsers"
         uses: actions/cache@v4
         id: playwright-cache
@@ -122,7 +121,6 @@ jobs:
             ${{ runner.os }}-playwright-
 
       - name: "[System] Install Playwright Chromium with deps"
-        # REVISED: Only runs if there's no cache hit
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         shell: bash
         run: npx playwright install --with-deps chromium
@@ -172,10 +170,8 @@ jobs:
               console.error(`===========================================================`);
               
               try {
-                console.error(`[DEBUG] Attempting full DOM extract...`);
                 const rawDom = await page.evaluate(() => document.documentElement.outerHTML);
                 const sanitizedDom = rawDom.replace(new RegExp(password, 'g'), '***REDACTED_PASSWORD***');
-                
                 console.error(`=================== FULL DOM DUMP START ===================`);
                 console.error(sanitizedDom);
                 console.error(`==================== FULL DOM DUMP END ====================`);
@@ -194,24 +190,33 @@ jobs:
               const cookieBtn = page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).first();
               try {
                 await cookieBtn.waitFor({ state: 'visible', timeout: 5000 });
-                console.log('[FLOW LOG] Cookie wall detected, clicking accept.');
                 await cookieBtn.click();
+                console.log('[FLOW LOG] Cookie wall cleared.');
               } catch (e) {
-                console.log('[FLOW LOG] No cookie wall detected within 5s, proceeding.');
+                console.log('[FLOW LOG] No cookie wall detected, proceeding.');
               }
 
-              console.log('[FLOW LOG] Clicking Inloggen element...');
+              console.log('[FLOW LOG] Clicking Inloggen link...');
               await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
               
-              console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
+              console.log('[FLOW LOG] Waiting for Login portal to fully load...');
               await page.waitForURL('**/wsp/login**', { timeout: 20000 });
               
-              console.log('[FLOW LOG] Injecting user credentials...');
-              await page.getByLabel(/E-mailadres|Username/i).or(page.locator('input#username')).fill(email);
-              await page.getByLabel(/Wachtwoord|Password/i).or(page.locator('input#password')).fill(password);
+              console.log('[FLOW LOG] Locating email and password fields...');
+              const emailField = page.getByRole('textbox', { name: 'E-mailadres' });
+              const passwordField = page.getByRole('textbox', { name: 'Wachtwoord' });
+              const submitBtn = page.getByRole('button', { name: 'Inloggen' });
               
+              await emailField.waitFor({ state: 'visible', timeout: 10000 });
+              
+              console.log('[FLOW LOG] Injecting user credentials...');
+              await emailField.fill(email);
+              await passwordField.fill(password);
+              
+              await page.waitForTimeout(500); 
               console.log('[FLOW LOG] Clicking sign in submit button...');
-              await page.getByRole('button', { name: /Inloggen|Sign in|Submit/i }).or(page.locator('button#submit')).click();
+              await submitBtn.click();
+              
             } catch (err) {
               await dumpDomAndDie('Initial Login Setup', err);
             }
@@ -235,7 +240,6 @@ jobs:
               await searchBar.fill('9300000035840899'); 
               await page.keyboard.press('Enter');
               
-              console.log('[FLOW LOG] Waiting for search results page to load...');
               await page.waitForURL('**/s/?searchtext=**', { timeout: 20000 });
             } catch (err) {
               await dumpDomAndDie('Product Search Execution', err);
@@ -251,16 +255,15 @@ jobs:
               await dumpDomAndDie('Clicking Search Result', err);
             }
 
-            console.log('[FLOW LOG] Awaiting "In winkelwagen" buy button visibility...');
+            console.log('[FLOW LOG] Awaiting buy button visibility...');
             try {
               const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
               await expect(buyButton).toBeVisible({ timeout: 20000 });
               
               await buyButton.hover();
-              console.log('[FLOW LOG] Clicking Buy Button...');
               await buyButton.click();
               
-              console.log('[FLOW LOG] Waiting for cart confirmation or count change...');
+              console.log('[FLOW LOG] Verifying cart state...');
               const cartCount = page.locator('[data-test="cart-count"]');
               try {
                 await expect(cartCount).not.toHaveText('0', { timeout: 8000 });
@@ -268,7 +271,6 @@ jobs:
                 console.log("[FLOW LOG] Cart count didn't flip immediately, proceeding anyway.");
               }
 
-              console.log('[FLOW LOG] Verifying cart state...');
               await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
               console.log(`[FLOW LOG] Cart page loaded: ${page.url()}`);
             } catch (err) {
