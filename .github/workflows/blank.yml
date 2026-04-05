@@ -70,7 +70,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/nl-addresses
-          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v4
+          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v5
           restore-keys: |
             ${{ runner.os }}-nl-addresses-ljpc-
 
@@ -412,13 +412,20 @@ jobs:
             await snap('opened-register-page');
 
             await selectSalutation(formData.salutation);
+            await snap('gender-selected');
+
             await fillByNameOrLabel(['firstName'], /voornaam/i, formData.firstName);
             if (formData.infix) await fillByNameOrLabel(['infix'], /tussenvoegsel/i, formData.infix);
             await fillByNameOrLabel(['lastName'], /achternaam/i, formData.lastName);
+            await snap('name-filled');
+
             await selectCountryTab(formData.countryMode);
+            await snap('country-selected');
 
             await fillByNameOrLabel(['NLpostalCode'], /postcode/i, formData.postalCode);
             await fillByNameOrLabel(['NLstreetNumber'], /huisnummer/i, formData.streetNumber);
+            await snap('address-entered');
+
             await page.waitForTimeout(2500);
 
             const addressState = await getAddressState();
@@ -428,11 +435,14 @@ jobs:
 
             await fillByNameOrLabel(['phone'], /telefoonnummer/i, formData.phone);
             if (formData.birthday) await fillByNameOrLabel(['birthday'], /geboortedatum/i, formData.birthday);
+            await snap('contact-filled');
+
             await fillByNameOrLabel(['email'], /email/i, formData.email);
             await fillByNameOrLabel(['password'], /wachtwoord/i, formData.password);
+            await snap('credentials-filled');
+
             await setCheckboxById('purchaseNewsletter', formData.purchaseNewsletter);
             await setCheckboxById('recommendationNewsletter', formData.recommendationNewsletter);
-
             await snap('before-submit');
 
             if (formData.submit) {
