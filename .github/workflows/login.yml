@@ -390,7 +390,7 @@ jobs:
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="bol login failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
 
-      # --- NEW STATE ARTIFACT UPLOAD ---
+      # --- STATE ARTIFACT UPLOAD ---
       - name: Upload Auth State
         if: steps.playwright.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -407,10 +407,9 @@ jobs:
           path: playwright-report/
           retention-days: 14
 
-  # --- NEW ORDERING TRIGGER ---
+  # --- TRIGGER ORDER WORKFLOW ---
   trigger-ordering:
     needs: playwright-login 
-    # Only run ordering if the login job was successful
     if: success() 
     uses: ./.github/workflows/order.yml
     secrets: inherit
