@@ -1,208 +1,208 @@
-name: Playwright Bol Ordering
+name: Playwright Bol Add to Cart
 on:
-  workflow_call: 
-  workflow_dispatch: 
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  playwright-order:
+  playwright-cart:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-    env:
-      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
-      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
-      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      
+    timeout-minutes: 15
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Download Auth State
+        uses: actions/download-artifact@v4
         with:
-          node-version: 20
+          name: playwright-state
+          path: .
+        continue-on-error: true
 
-      # --- NEW STEP TO FIX ENOENT ---
       - name: Create package.json
         shell: bash
         run: |
           set -euo pipefail
           cat > package.json <<'EOF'
           {
-            "name": "playwright-bol-ordering",
+            "name": "playwright-bol-cart",
             "private": true,
             "devDependencies": {
-              "@playwright/test": "^1.54.0"
+              "@playwright/test": "^1.54.0",
+              "playwright-extra": "^4.3.6",
+              "puppeteer-extra-plugin-stealth": "^2.11.2"
             }
           }
           EOF
 
-      - name: Install dependencies
+      - name: Install Node dependencies
+        shell: bash
+        run: npm install
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: npx playwright install-deps chromium
+
+      - name: Create Playwright config
         shell: bash
         run: |
           set -euo pipefail
-          npm install
-          npx playwright install --with-deps chromium
+          cat > playwright.config.js <<'EOF'
+          const { defineConfig } = require('@playwright/test');
+          module.exports = defineConfig({
+            testDir: './tests',
+            timeout: 300000, 
+            expect: { timeout: 15000 },
+            use: {
+              headless: false, 
+              viewport: { width: 1366, height: 768 },
+              screenshot: 'only-on-failure',
+            },
+            projects: [{ name: 'chromium' }]
+          });
+          EOF
 
-      # Downloads the session state file saved by the successful login run
-      - name: Download Auth State
-        uses: actions/download-artifact@v4
-        with:
-          name: playwright-state
-          path: .
-
-      - name: Verify Auth State Exists
-        shell: bash
-        run: |
-          if [ ! -f "state.json" ]; then
-            echo "❌ ERROR: state.json was not found! The login step might not have saved it correctly."
-            exit 1
-          fi
-          echo "✅ state.json found. Proceeding to ordering."
-
-      # Creates the ordering script dynamically just like login.yml did
-      - name: Create Ordering Test
+      - name: Create Cart Action Test Script
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p tests
-          cat > tests/bol-ordering.spec.js <<'EOF'
+          cat > tests/bol-cart.spec.js <<'EOF'
           const { test, expect } = require('@playwright/test');
+          const { chromium } = require('playwright-extra');
+          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+          
+          chromium.use(StealthPlugin());
+
           const fs = require('fs');
           const path = require('path');
           const { execSync } = require('child_process');
 
-          test('order item and verify success', async ({ browser }, testInfo) => {
-            const screenshotDir = path.join(process.cwd(), 'order-screenshots');
+          test('Bypass login and add Airtag to cart with Telegram screenshots', async () => {
+            const screenshotDir = path.join(process.cwd(), 'cart-screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
             let step = 1;
 
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
 
-            console.log('--- ORDERING TEST START ---');
+            const browserInstance = await chromium.launch({
+              headless: false,
+              args: ['--disable-blink-features=AutomationControlled']
+            });
 
-            const maxAttempts = 5; 
-            let success = false;
+            const statePath = path.join(process.cwd(), 'state.json');
+            let context;
 
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              console.log(`\nStarting Attempt ${attempt} of ${maxAttempts}...`);
-              
-              // Load the injected login state but still route through a proxy
-              const context = await browser.newContext({
-                storageState: 'state.json',
-                proxy: {
-                  server: process.env.PROXY_SERVER,
-                  username: process.env.PROXY_USERNAME,
-                  password: process.env.PROXY_PASSWORD
-                }
+            if (fs.existsSync(statePath)) {
+              console.log('Found state.json! Loading previous session.');
+              context = await browserInstance.newContext({
+                storageState: statePath,
+                locale: 'nl-NL',
+                timezoneId: 'Europe/Amsterdam',
+                extraHTTPHeaders: { 'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8' }
               });
-              
-              const page = await context.newPage();
-              page.setDefaultNavigationTimeout(30000); 
+            } else {
+              console.log('No state.json found. Running session without pre-auth.');
+              context = await browserInstance.newContext({
+                locale: 'nl-NL',
+                timezoneId: 'Europe/Amsterdam',
+                extraHTTPHeaders: { 'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8' }
+              });
+            }
 
-              async function snap(name) {
-                const filename = `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`;
-                const file = path.join(screenshotDir, filename);
-                try {
-                  await page.screenshot({ path: file, fullPage: true, timeout: 5000 });
-                  console.log(`[STEP ${step}] Screenshot saved: ${file}`);
-                  step += 1;
+            const page = await context.newPage();
+            page.setDefaultNavigationTimeout(15000);
+            page.setDefaultTimeout(5000);
 
-                  if (botToken && chatId) {
-                    console.log(`Sending ${filename} to Telegram...`);
-                    try {
-                      execSync(`curl -s -F chat_id="${chatId}" -F photo="@${file}" -F caption="Step: ${filename}" "https://api.telegram.org/bot${botToken}/sendPhoto"`, { stdio: 'ignore' });
-                    } catch (telegramErr) {
-                      console.log(`Telegram dispatch failed: ${telegramErr.message}`);
-                    }
-                  }
-                  
-                  return file;
-                } catch (e) {
-                  console.log(`[STEP ${step}] Screenshot failed (Proxy probably hung): ${e.message}`);
-                }
-              }
-
+            async function snap(name) {
+              const filename = `cart-${String(step).padStart(2, '0')}-${name}.png`;
+              const file = path.join(screenshotDir, filename);
               try {
-                // Cloak webdriver just in case
-                await page.addInitScript(() => {
-                  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                });
-
-                console.log('Navigating directly to Bol account dashboard to check session...');
-                await page.goto('https://www.bol.com/nl/rnwy/account/overzicht', { waitUntil: 'domcontentloaded' });
-                await page.waitForTimeout(2000); 
-                await snap('dashboard-check');
-
-                const bodyText = await page.innerText('body');
-                if (bodyText.includes('captcha') || bodyText.includes('robot') || bodyText.includes('unusual traffic')) {
-                  console.log('⚠️ Captcha or Block detected on ordering flow! Recycling proxy...');
-                  await context.close();
-                  continue; 
-                }
-
-                // If redirected away from account, session failed.
-                if (page.url().includes('/login')) {
-                    console.log('❌ Session expired or rejected. Cannot proceed with order.');
-                    throw new Error('Storage state failed to preserve logged-in session.');
-                }
-
-                console.log('Session verified successfully.');
-
-                // --- ADD YOUR SPECIFIC PRODUCT ORDERING STEPS HERE ---
+                await page.waitForTimeout(500); // Safety wait to prevent black/blank screenshots
+                await page.screenshot({ path: file, fullPage: true, timeout: 3000 });
+                console.log(`[CART STEP ${step}] Screenshot: ${file}`);
                 
-                console.log('🎉 SUCCESS: Completed Ordering Sequence.');
-                success = true;
-                await context.close();
-                break; 
-
-              } catch (err) {
-                console.log(`⚠️ Attempt ${attempt} encountered an error: ${err.message}`);
-                await context.close(); 
-                if (attempt === maxAttempts) throw err; 
-                await new Promise(resolve => setTimeout(resolve, 3000));
+                if (botToken && chatId) {
+                  execSync(`curl -s -F chat_id="${chatId}" -F photo="@${file}" -F caption="Cart Step: ${filename}" "https://api.telegram.org/bot${botToken}/sendPhoto"`, { stdio: 'ignore' });
+                }
+                step += 1;
+              } catch (e) {
+                console.log(`Failed to capture/send screenshot for step ${name}: ${e.message}`);
               }
             }
 
-            if (!success) {
-              throw new Error('Failed to complete order after max proxy rotation attempts.');
+            try {
+              console.log('Navigating directly to Apple AirTag page...');
+              await page.goto('https://www.bol.com/nl/nl/p/apple-airtag-4-stuks/9300000035840899/', { waitUntil: 'domcontentloaded' });
+              await snap('01-product-landed');
+              
+              const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
+              if (await cookieBtn.isVisible()) {
+                console.log('Triggering Accept cookies...');
+                await snap('02-before-cookie-click');
+                await cookieBtn.click();
+                await snap('03-after-cookie-click');
+              }
+
+              const buyButton = page.locator('a:has-text("In winkelwagen"), button:has-text("In winkelwagen"), [data-test="add-to-cart-button"]').first();
+              await expect(buyButton).toBeVisible({ timeout: 5000 });
+              
+              console.log('Clicking to drop item into the cart...');
+              await snap('04-before-add-to-cart');
+              await buyButton.click();
+              
+              await page.waitForTimeout(3000); // Wait for cart drop flyout/animation to finish
+              await snap('05-after-add-to-cart');
+
+              console.log('Loading the shopping cart page for verification...');
+              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
+              
+              await page.waitForTimeout(2000); // Wait for basket values to update visually
+              await snap('06-cart-overview-final');
+
+              console.log('🎉 Item added successfully!');
+              await browserInstance.close();
+            } catch (err) {
+              console.log(`⚠️ Process failed: ${err.message}`);
+              await snap('07-error-break');
+              await browserInstance.close();
+              throw err;
             }
-            console.log('--- ORDERING TEST END ---');
           });
           EOF
 
       - name: Run Playwright test
-        id: playwright
         shell: bash
-        run: xvfb-run npx playwright test tests/bol-ordering.spec.js
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+        run: xvfb-run npx playwright test
 
-      - name: Send Telegram success message
-        if: steps.playwright.outcome == 'success' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d text="bol ordering flow completed successfully!%0ARepo: ${{ github.repository }}"
-
-      - name: Send Telegram failure message
-        if: steps.playwright.outcome != 'success' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d text="bol ordering flow failed!%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-      - name: Upload Playwright report
+      - name: Upload Cart Screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-order-report
-          path: playwright-report/
-          retention-days: 14
+          name: cart-screenshots
+          path: cart-screenshots/
+          retention-days: 7
