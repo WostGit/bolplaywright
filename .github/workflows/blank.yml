@@ -1,4 +1,4 @@
-name: Playwright Bol Register + Login + Target Search
+name: Playwright Bol Registration Only
 
 on:
   workflow_dispatch:
@@ -26,9 +26,6 @@ jobs:
       BOL_RECOMMENDATION_NEWSLETTER: "false"
       SUBMIT_FORM: "true"
 
-      LOGIN_URL: "https://login.bol.com/wsp/login"
-      SEARCH_URL: "https://www.bol.com/nl/nl/s/?searchtext=computer&12194=90-100&page=1&bltgh=e28fb3be-ba6d-43bf-aa1e-a7bbc92669d7.g.i.QueryContextHook&filter_N=30640"
-
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
@@ -50,8 +47,6 @@ jobs:
           test -n "$PROXY_USERNAME" || { echo "Missing secret PROXY_USERNAME"; exit 1; }
           test -n "$PROXY_PASSWORD" || { echo "Missing secret PROXY_PASSWORD"; exit 1; }
           test -n "$BOL_PASSWORD" || { echo "Missing secret BOL_PASSWORD"; exit 1; }
-          test -n "$TELEGRAM_BOT_TOKEN" || { echo "Missing secret TELEGRAM_BOT_TOKEN"; exit 1; }
-          test -n "$TELEGRAM_CHAT_ID" || { echo "Missing secret TELEGRAM_CHAT_ID"; exit 1; }
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -75,7 +70,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/nl-addresses
-          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v10
+          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v11
           restore-keys: |
             ${{ runner.os }}-nl-addresses-ljpc-
 
@@ -210,7 +205,7 @@ jobs:
           set -euo pipefail
           cat > package.json <<'EOF'
           {
-            "name": "playwright-bol-smart-register",
+            "name": "playwright-bol-registration-only",
             "private": true,
             "devDependencies": {
               "@playwright/test": "^1.54.0"
@@ -277,7 +272,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('register, login, and open target search page', async ({ page }, testInfo) => {
+          test('registration only with screenshots on every step', async ({ page }, testInfo) => {
             const screenshotDir = path.join(testInfo.outputDir, 'step-screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
 
@@ -303,9 +298,7 @@ jobs:
               password: process.env.BOL_PASSWORD || '',
               purchaseNewsletter: String(process.env.BOL_PURCHASE_NEWSLETTER || 'true').toLowerCase() === 'true',
               recommendationNewsletter: String(process.env.BOL_RECOMMENDATION_NEWSLETTER || 'false').toLowerCase() === 'true',
-              submit: String(process.env.SUBMIT_FORM || 'false').toLowerCase() === 'true',
-              loginUrl: process.env.LOGIN_URL,
-              searchUrl: process.env.SEARCH_URL
+              submit: String(process.env.SUBMIT_FORM || 'false').toLowerCase() === 'true'
             };
 
             async function gotoWithRetry(url, attempts = 3) {
@@ -443,80 +436,75 @@ jobs:
               return /recaptcha|captcha/i.test(html);
             }
 
-            async function loginFlow() {
-              await gotoWithRetry(formData.loginUrl, 3);
-              await waitForStable();
-              await acceptCookiesIfPresent();
-              await snap('login-page-opened');
-
-              const emailInput = page.locator('input[name="j_username"], input#username').first();
-              const passwordInput = page.locator('input[name="j_password"], input#password').first();
-              const submitButton = page.locator('button#submit').first();
-
-              await expect(emailInput).toBeVisible();
-              await expect(passwordInput).toBeVisible();
-
-              await emailInput.fill('');
-              await emailInput.fill(formData.email);
-              await passwordInput.fill('');
-              await passwordInput.fill(formData.password);
-              await snap('login-form-filled');
-
-              await expect(submitButton).toBeVisible();
-              await submitButton.scrollIntoViewIfNeeded();
-              await page.waitForTimeout(500);
-              await submitButton.click();
-              await page.waitForTimeout(4000);
-              await snap('after-login-submit');
-            }
-
             await gotoWithRetry('https://login.bol.com/wsp/register', 3);
             await waitForStable();
+            await snap('01-opened-register-page');
+
             await acceptCookiesIfPresent();
-            await snap('opened-register-page');
+            await snap('02-after-cookie-check');
 
             await expect(page.locator('form')).toBeVisible();
+            await snap('03-form-visible');
 
             const salutationSelected = await selectSalutation(formData.salutation);
             if (!salutationSelected) {
               throw new Error(`Could not select gender/salutation: ${formData.salutation}`);
             }
-            await snap('gender-selected');
+            await snap('04-gender-selected');
 
             await fillByNameOrLabel(['firstName'], /voornaam/i, formData.firstName);
-            if (formData.infix) await fillByNameOrLabel(['infix'], /tussenvoegsel/i, formData.infix);
+            await snap('05-first-name-filled');
+
+            if (formData.infix) {
+              await fillByNameOrLabel(['infix'], /tussenvoegsel/i, formData.infix);
+              await snap('06-infix-filled');
+            }
+
             await fillByNameOrLabel(['lastName'], /achternaam/i, formData.lastName);
-            await snap('name-filled');
+            await snap('07-last-name-filled');
 
             await selectCountryTab(formData.countryMode);
-            await snap('country-selected');
+            await snap('08-country-selected');
 
             await fillByNameOrLabel(['NLpostalCode'], /postcode/i, formData.postalCode);
+            await snap('09-postcode-filled');
+
             await fillByNameOrLabel(['NLstreetNumber'], /huisnummer/i, formData.streetNumber);
-            await snap('address-entered');
+            await snap('10-house-number-filled');
 
             await page.waitForTimeout(2500);
             const addressState = await getAddressState();
             if (!addressState.success) {
+              await snap('11-address-failed');
               throw new Error(`Dataset address was rejected by bol. postcode=${formData.postalCode} huisnummer=${formData.streetNumber}`);
             }
+            await snap('11-address-resolved');
 
             await fillByNameOrLabel(['phone'], /telefoonnummer/i, formData.phone);
-            if (formData.birthday) await fillByNameOrLabel(['birthday'], /geboortedatum/i, formData.birthday);
-            await snap('contact-filled');
+            await snap('12-phone-filled');
+
+            if (formData.birthday) {
+              await fillByNameOrLabel(['birthday'], /geboortedatum/i, formData.birthday);
+              await snap('13-birthday-filled');
+            }
 
             await fillByNameOrLabel(['email'], /email/i, formData.email);
+            await snap('14-email-filled');
+
             await fillByNameOrLabel(['password'], /wachtwoord/i, formData.password);
-            await snap('credentials-filled');
+            await snap('15-password-filled');
 
             await setCheckboxById('purchaseNewsletter', formData.purchaseNewsletter);
-            await setCheckboxById('recommendationNewsletter', formData.recommendationNewsletter);
+            await snap('16-purchase-newsletter-set');
 
-            await snap('before-registration');
+            await setCheckboxById('recommendationNewsletter', formData.recommendationNewsletter);
+            await snap('17-recommendation-newsletter-set');
+
+            await snap('18-before-registration');
 
             const captchaPresent = await detectCaptcha();
             if (captchaPresent) {
-              await snap('captcha-detected-before-register');
+              await snap('19-captcha-detected');
               throw new Error('Captcha detected before registration. Stopping for manual intervention.');
             }
 
@@ -525,17 +513,10 @@ jobs:
               await submitButton.scrollIntoViewIfNeeded();
               await page.waitForTimeout(500);
               await submitButton.click();
-              await page.waitForTimeout(4000);
+              await page.waitForTimeout(5000);
             }
 
-            await snap('after-registration');
-
-            await loginFlow();
-
-            await gotoWithRetry(formData.searchUrl, 3);
-            await waitForStable();
-            await acceptCookiesIfPresent();
-            await snap('target-search-page-opened');
+            await snap('19-after-registration');
           });
           EOF
 
@@ -544,34 +525,42 @@ jobs:
         run: npx playwright test
 
       - name: Persist registered email in repo
-        if: success()
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p data
           python <<'PY'
           import json, os
+
           path = "data/registered-emails.json"
+          email = os.environ.get("BOL_EMAIL", "")
+
           entry = {
-              "email": os.environ["BOL_EMAIL"],
-              "run_id": os.environ["GITHUB_RUN_ID"],
-              "repository": os.environ["GITHUB_REPOSITORY"],
-              "workflow": os.environ["GITHUB_WORKFLOW"]
+              "email": email,
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+              "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+              "used_to_login": False
           }
+
           try:
               with open(path, "r", encoding="utf-8") as f:
                   data = json.load(f)
           except FileNotFoundError:
               data = []
+
           if not isinstance(data, list):
               data = []
+
           data.append(entry)
+
           with open(path, "w", encoding="utf-8") as f:
               json.dump(data, f, indent=2, ensure_ascii=False)
           PY
 
       - name: Commit registered email list
-        if: success()
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -583,16 +572,16 @@ jobs:
           git push
 
       - name: Send Telegram success message
-        if: success()
+        if: success() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
         run: |
           set -euo pipefail
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d text="bol workflow succeeded%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
+            -d text="bol registration succeeded%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
 
       - name: Send before-registration screenshot to Telegram
-        if: always()
+        if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -605,7 +594,7 @@ jobs:
           fi
 
       - name: Send after-registration screenshot to Telegram
-        if: always()
+        if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -618,13 +607,13 @@ jobs:
           fi
 
       - name: Send Telegram failure message
-        if: failure()
+        if: failure() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         shell: bash
         run: |
           set -euo pipefail
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d text="bol workflow failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            -d text="bol registration failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Upload registered emails file
         if: always()
