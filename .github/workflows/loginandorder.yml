@@ -232,6 +232,11 @@ jobs:
                 await page.getByRole('textbox', { name: 'E-mailadres' }).fill(email);
                 await page.getByRole('textbox', { name: 'Wachtwoord' }).fill(password);
                 
+                // [NEW] Visual Checkpoint 1: Documenting before submission
+                const loginPrepPath = `login-credentials-filled-attempt-${attempts}.png`;
+                await page.screenshot({ path: loginPrepPath, fullPage: false });
+                await sendTelegramAlert(loginPrepPath, `[Attempt ${attempts}] Credentials typed. Proceeding to submit.`);
+
                 await page.waitForTimeout(1000); 
                 await page.getByRole('button', { name: 'Inloggen' }).click();
 
@@ -248,19 +253,27 @@ jobs:
                 await page.waitForLoadState('networkidle');
                 console.log('[FLOW LOG] Logged in successfully and fully redirected.');
 
+                // [NEW] Visual Checkpoint 2: Validating successful landing state
+                const landingPath = `login-success-landing-attempt-${attempts}.png`;
+                await page.screenshot({ path: landingPath, fullPage: false });
+                await sendTelegramAlert(landingPath, `[Attempt ${attempts}] Logged in successfully! Landing state captured.`);
+
                 console.log('[FLOW LOG] Forcing direct cart add for AirTag 4-Pack...');
                 await page.goto('https://www.bol.com/nl/order/basket/addItems.html?productId=9300000035840899&offerUid=5589e402-f3f8-446a-8495-383cb58b6cb6&quantity=1', { waitUntil: 'networkidle' });
                 
                 console.log('[FLOW LOG] Verifying cart screen loaded...');
                 await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', { waitUntil: 'networkidle' });
+                
+                // Let the proxy settle slightly so the graphic elements render
+                await page.waitForTimeout(2000);
                 console.log(`[FLOW LOG] Cart page loaded successfully: ${page.url()}`);
                 
-                // NEW: Send a successful checkout snapshot straight to your phone!
-                const successScreenshotPath = `success-cart-loaded.png`;
+                // [NEW] Visual Checkpoint 3: Finale
+                const successScreenshotPath = `success-cart-loaded-attempt-${attempts}.png`;
                 await page.screenshot({ path: successScreenshotPath, fullPage: true });
                 await sendTelegramAlert(
                   successScreenshotPath, 
-                  `🎉 Success! Flow completed natively.\nFinal URL: ${page.url()}`
+                  `🎉 Success! Flow completed natively on Attempt ${attempts}.\nFinal URL: ${page.url()}`
                 );
 
                 success = true;
