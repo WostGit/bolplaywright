@@ -482,12 +482,40 @@ jobs:
           import yaml
           import os
           from datetime import datetime
+          import urllib.request
+          import urllib.error
 
           path = "data/registered-emails.yml"
           email = os.environ.get("BOL_EMAIL", "")
 
           if not email:
               print("No email generated, skipping YAML update.")
+              exit(0)
+
+          # Extract username from the email (everything before '@')
+          username = email.split('@')[0]
+          api_url = f"http://141.144.197.59:5000/emails/{username}"
+
+          print(f"Checking API for username: {username}...")
+          
+          try:
+              # Make the GET request to your API
+              req = urllib.request.Request(
+                  api_url, 
+                  headers={'User-Agent': 'GitHub-Actions'}
+              )
+              with urllib.request.urlopen(req, timeout=10) as response:
+                  response_text = response.read().decode('utf-8')
+                  
+                  # Check if the @ sign is in the response body
+                  if "@" not in response_text:
+                      print(f"API response did not contain '@'. Skipping email append. Response was: {response_text}")
+                      exit(0)
+                      
+                  print("Valid API response received containing '@'. Proceeding to append email.")
+                  
+          except urllib.error.URLError as e:
+              print(f"Error connecting to API: {e}. Skipping email append to be safe.")
               exit(0)
 
           now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
@@ -519,6 +547,8 @@ jobs:
 
           with open(path, "w", encoding="utf-8") as f:
               yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+          
+          print(f"Successfully appended {email} to {path}")
           PY
 
       - name: Commit registered email list
@@ -577,7 +607,6 @@ jobs:
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="bol registration failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-      # NEW: This specific step wakes up login.yml automatically!
       - name: Trigger Login Workflow Handover
         if: success()
         shell: bash
