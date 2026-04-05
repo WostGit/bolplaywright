@@ -1,4 +1,4 @@
-name: Playwright Bol Register + Login + Computer Search
+name: Playwright Bol Register + Login + Telegram
 
 on:
   workflow_dispatch:
@@ -75,7 +75,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/nl-addresses
-          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v9
+          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v10
           restore-keys: |
             ${{ runner.os }}-nl-addresses-ljpc-
 
@@ -110,7 +110,6 @@ jobs:
           cat > random_nl_house.py <<'PY'
           import csv
           import io
-          import json
           import os
           import random
           import re
@@ -152,8 +151,7 @@ jobs:
               }
               for src, dst in replacements.items():
                   value = value.replace(src, dst)
-              value = re.sub(r"[^a-z0-9]", "", value)
-              return value
+              return re.sub(r"[^a-z0-9]", "", value)
 
           def normalize_pool(values, target_size=1000):
               cleaned = [v.strip() for v in values if v and v.strip()]
@@ -167,17 +165,16 @@ jobs:
               return out
 
           first_names = [
-              "Jan","Pieter","Kees","Henk","Hans","Johan","Peter","Paul","Mark","Bas","Bart","Tom","Tim","Ruben","Daan","Bram","Thijs","Niels","Koen","Jasper",
-              "Maarten","Martijn","Jeroen","Joost","Stefan","Sander","Wouter","Arjan","Erik","Michiel","Dirk","Gert","Rob","Robin","Dennis","Wim","Jelle","Tobias","Levi","Sem",
-              "Luuk","Milan","Noah","Liam","Finn","James","Lucas","Mats","Stijn","Tijs","Cas","Max","Sam","Mick","Ryan","Dylan","Jesse","Teun","Floris","Julian",
-              "Tijn","Olivier","Morris","Pepijn","Siem","Hugo","Benjamin","David","Daniel","Thomas","Vincent","Victor","Rik","Rens","Kaj","Tygo","Aiden","Melle","Sven","Jop",
-              "Aart","Ab","Abel","Ad","Adam","Adriaan","Adrie","Aldert","Alex","Alexander","Alfred","Ali","Andre","Anton","Arend","Arie","Arjen","Arnold","Arthur","Auke"
+              "Jan","Pieter","Kees","Henk","Hans","Johan","Peter","Paul","Mark","Bas",
+              "Bart","Tom","Tim","Ruben","Daan","Bram","Thijs","Niels","Koen","Jasper",
+              "Maarten","Martijn","Jeroen","Joost","Stefan","Sander","Wouter","Arjan","Erik","Michiel",
+              "Dirk","Gert","Rob","Robin","Dennis","Wim","Jelle","Tobias","Levi","Sem"
           ]
 
           last_names = [
-              "De Jong","Jansen","De Vries","Van den Berg","Van Dijk","Bakker","Janssen","Visser","Smit","Meijer","De Boer","Mulder","De Groot","Bos","Vos","Peters","Hendriks","Van Leeuwen","Dekker","Brouwer",
-              "De Wit","Dijkstra","Smits","De Graaf","Van der Meer","Jonker","Jacobs","Van Rijn","Van der Linden","Vermeulen","Post","Van Vliet","Kuiper","Groen","Schouten","Van Dam","Koster","Boot","Prins","Kok",
-              "Kramer","Sanders","Schipper","Van den Heuvel","Willems","Hermans","Van der Wal","Scholten","Wolters","Van Beek","Wouters","Hoekstra","Peeters","Van der Horst","Vink","Mol","Molenaar","De Bruijn","De Bruin","Van der Velden"
+              "De Jong","Jansen","De Vries","Van den Berg","Van Dijk","Bakker","Janssen","Visser","Smit","Meijer",
+              "De Boer","Mulder","De Groot","Bos","Vos","Peters","Hendriks","Van Leeuwen","Dekker","Brouwer",
+              "De Wit","Dijkstra","Smits","De Graaf","Van der Meer","Jonker","Jacobs","Van Rijn","Van der Linden","Vermeulen"
           ]
 
           first_names = normalize_pool(first_names, 1000)
@@ -185,11 +182,10 @@ jobs:
 
           first_name = random.choice(first_names)
           last_name = random.choice(last_names)
-
           row = random_address_from_local_zstd_csv(DATASET_FILE)
+
           postcode = (row.get("postcode") or "").strip().replace(" ", "").upper()
           huisnummer = (row.get("huisnummer") or "").strip()
-
           phone = "06" + "".join(str(random.randint(0, 9)) for _ in range(8))
           email = f"{sanitize_email_part(first_name)}{sanitize_email_part(last_name)}@qrlfoundation.org"
 
@@ -278,8 +274,8 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('register, login, and open target search page', async ({ page }, testInfo) => {
-            const screenshotDir = path.join(testInfo.outputDir, 'step-screenshots');
+          test('register then login then open target page', async ({ page }) => {
+            const screenshotDir = path.join(process.cwd(), 'telegram-screens');
             fs.mkdirSync(screenshotDir, { recursive: true });
 
             let step = 1;
@@ -345,6 +341,17 @@ jobs:
                     return true;
                   }
                 } catch {}
+              }
+              return false;
+            }
+
+            async function fillSelector(selector, value) {
+              const el = page.locator(selector).first();
+              if (await el.count()) {
+                await el.scrollIntoViewIfNeeded();
+                await el.fill('');
+                await el.fill(String(value));
+                return true;
               }
               return false;
             }
@@ -444,26 +451,35 @@ jobs:
               return /recaptcha|captcha/i.test(html);
             }
 
-            async function loginIfPossible() {
+            async function loginWithKnownFields() {
               await gotoWithRetry(formData.loginUrl, 3);
               await waitForStable();
               await acceptCookiesIfPresent();
               await snap('login-page-opened');
 
-              const emailFilled = await fillByNameOrLabel(['loginEmail', 'email'], /e-?mail/i, formData.email);
-              const passwordFilled = await fillByNameOrLabel(['password'], /wachtwoord/i, formData.password);
+              const emailOk =
+                await fillSelector('input[name="j_username"]', formData.email) ||
+                await fillSelector('#username', formData.email) ||
+                await fillByNameOrLabel(['j_username', 'username'], /e-mailadres|e-?mail/i, formData.email);
+
+              const passwordOk =
+                await fillSelector('input[name="j_password"]', formData.password) ||
+                await fillSelector('#password', formData.password) ||
+                await fillByNameOrLabel(['j_password', 'password'], /wachtwoord/i, formData.password);
+
+              if (!emailOk) throw new Error('Could not fill login email field.');
+              if (!passwordOk) throw new Error('Could not fill login password field.');
+
               await snap('login-form-filled');
 
-              if (emailFilled && passwordFilled) {
-                const loginButton = page.getByRole('button', { name: /inloggen|login/i }).first();
-                if (await loginButton.count()) {
-                  await loginButton.scrollIntoViewIfNeeded();
-                  await page.waitForTimeout(500);
-                  await loginButton.click();
-                  await page.waitForTimeout(4000);
-                  await snap('after-login');
-                }
-              }
+              const loginButton =
+                page.locator('#submit').first().or(page.getByRole('button', { name: /inloggen/i }).first());
+
+              await loginButton.scrollIntoViewIfNeeded();
+              await page.waitForTimeout(500);
+              await loginButton.click();
+              await page.waitForTimeout(5000);
+              await snap('after-login-submit');
             }
 
             await gotoWithRetry('https://login.bol.com/wsp/register', 3);
@@ -526,7 +542,7 @@ jobs:
 
             await snap('after-registration');
 
-            await loginIfPossible();
+            await loginWithKnownFields();
 
             await gotoWithRetry(formData.searchUrl, 3);
             await waitForStable();
@@ -592,7 +608,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FILE=$(find test-results -type f -name '*before-registration*.png' | head -n 1 || true)
+          FILE=$(find telegram-screens -type f -name '*before-registration*.png' | head -n 1 || true)
           if [ -n "${FILE:-}" ]; then
             curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" \
               -F chat_id="${TELEGRAM_CHAT_ID}" \
@@ -605,12 +621,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FILE=$(find test-results -type f -name '*after-registration*.png' | head -n 1 || true)
+          FILE=$(find telegram-screens -type f -name '*after-registration*.png' | head -n 1 || true)
           if [ -n "${FILE:-}" ]; then
             curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" \
               -F chat_id="${TELEGRAM_CHAT_ID}" \
               -F photo=@"$FILE" \
               -F caption="After registration screenshot"
+          fi
+
+      - name: Send login screenshot to Telegram
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=$(find telegram-screens -type f -name '*login-page-opened*.png' | head -n 1 || true)
+          if [ -n "${FILE:-}" ]; then
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" \
+              -F chat_id="${TELEGRAM_CHAT_ID}" \
+              -F photo=@"$FILE" \
+              -F caption="Login page screenshot"
           fi
 
       - name: Send Telegram failure message
@@ -621,6 +650,15 @@ jobs:
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="bol workflow failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-screens
+          path: telegram-screens/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload registered emails file
         if: always()
