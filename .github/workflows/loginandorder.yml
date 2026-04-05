@@ -1,0 +1,331 @@
+name: Playwright Bol Unified Flow
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  run-full-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    
+    env:
+      BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: "[System] Checkout Repository"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "[System] Setup Node.js"
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: "[System] Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "[System] Install Python dependencies"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: "[Prep] Extract unused email from YAML"
+        id: get-email
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "================================================================"
+          echo " Starting Python extraction of data/registered-emails.yml"
+          echo "================================================================"
+          python <<'PY'
+          import yaml
+          import os
+
+          path = "data/registered-emails.yml"
+          if not os.path.exists(path):
+              print("[FATAL ERROR] No registration file found at data/registered-emails.yml! Exiting.")
+              exit(1)
+
+          with open(path, "r", encoding="utf-8") as f:
+              data = yaml.safe_load(f) or []
+
+          target_account = None
+          for entry in data:
+              if not entry.get("used_to_login", False):
+                  target_account = entry
+                  break
+
+          if not target_account:
+              print("[FATAL ERROR] No unused accounts available for login! All are marked as true.")
+              exit(1)
+
+          email = target_account["email"]
+          print(f"[SUCCESS] Target account localized: {email}")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"BOL_EMAIL={email}\n")
+          PY
+
+      - name: "[Prep] Create project files dynamically"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Creating package.json..."
+          cat > package.json <<'EOF'
+          {
+            "name": "bol-flow",
+            "private": true,
+            "devDependencies": {
+              "@playwright/test": "^1.54.0",
+              "playwright-extra": "^4.3.6",
+              "puppeteer-extra-plugin-stealth": "^2.11.2"
+            }
+          }
+          EOF
+
+          echo "Creating playwright.config.js..."
+          cat > playwright.config.js <<'EOF'
+          const { defineConfig } = require('@playwright/test');
+          module.exports = defineConfig({
+            timeout: 300000, 
+            expect: { timeout: 15000 },
+            use: { 
+              headless: false,
+              viewport: { width: 1366, height: 768 }
+            },
+            projects: [{ name: 'chromium' }]
+          });
+          EOF
+
+      - name: "[System] Install Node Dependencies"
+        shell: bash
+        run: npm install
+
+      - name: "[System] Install Playwright Chromium with deps"
+        shell: bash
+        run: npx playwright install --with-deps chromium
+
+      # ========================================================================
+      # STEP 1: CREATE & RUN THE LOGIN JS SCRIPT
+      # ========================================================================
+      - name: "[Step 1] Execute Stealth Login"
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          # We place the script directly at the project root! No subfolder.
+          cat > bol-login.spec.js <<'EOF'
+          const { test, expect } = require('@playwright/test');
+          const { chromium } = require('playwright-extra');
+          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+          const fs = require('fs');
+          const path = require('path');
+          
+          chromium.use(StealthPlugin());
+
+          test('Login flow with proxy and save state.json', async () => {
+            console.log('\n[LOGIN SCRIPT] --- STARTING ---');
+            const email = process.env.BOL_EMAIL;
+            const password = process.env.BOL_PASSWORD;
+            
+            console.log(`[LOGIN SCRIPT] Attempting login with: ${email}`);
+
+            const browser = await chromium.launch({
+              headless: false,
+              args: ['--disable-blink-features=AutomationControlled']
+            });
+            
+            const context = await browser.newContext({
+              locale: 'nl-NL',
+              timezoneId: 'Europe/Amsterdam',
+              extraHTTPHeaders: { 'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8' },
+              proxy: {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              }
+            });
+
+            const page = await context.newPage();
+            page.setDefaultTimeout(15000);
+
+            console.log('[LOGIN SCRIPT] Navigating to Bol homepage...');
+            await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
+            
+            console.log('[LOGIN SCRIPT] Handling cookie popups if present...');
+            const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
+            if (await cookieBtn.isVisible()) {
+              console.log('[LOGIN SCRIPT] Clicked cookie accept.');
+              await cookieBtn.click();
+            }
+
+            console.log('[LOGIN SCRIPT] Clicking "Inloggen" button...');
+            await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click();
+            
+            console.log('[LOGIN SCRIPT] Waiting for login form to load...');
+            await page.waitForURL('**/wsp/login**');
+            
+            console.log('[LOGIN SCRIPT] Typing credentials...');
+            await page.locator('input#username').fill(email);
+            await page.locator('input#password').fill(password);
+            
+            console.log('[LOGIN SCRIPT] Submitting login form...');
+            await page.locator('button#submit').click();
+            
+            console.log('[LOGIN SCRIPT] Waiting for redirection back to homepage...');
+            await page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 20000 });
+            
+            const currentUrl = page.url();
+            console.log(`[LOGIN SCRIPT] Successfully landed at: ${currentUrl}`);
+            
+            const statePath = path.join(process.cwd(), 'state.json');
+            console.log(`[LOGIN SCRIPT] Saving storage state to: ${statePath}`);
+            await context.storageState({ path: statePath });
+
+            await browser.close();
+            console.log('[LOGIN SCRIPT] Browser closed. Job done.\n');
+          });
+          EOF
+
+          echo "Initiating execution of bol-login.spec.js..."
+          xvfb-run npx playwright test bol-login.spec.js
+
+      # ========================================================================
+      # STEP 2: CREATE & RUN THE CART JS SCRIPT
+      # ========================================================================
+      - name: "[Step 2] Execute Add to Cart"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > bol-cart.spec.js <<'EOF'
+          const { test, expect } = require('@playwright/test');
+          const { chromium } = require('playwright-extra');
+          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+          const fs = require('fs');
+          const path = require('path');
+          
+          chromium.use(StealthPlugin());
+
+          test('Restore session from state.json and add to cart', async () => {
+            console.log('\n[CART SCRIPT] --- STARTING ---');
+            
+            const statePath = path.join(process.cwd(), 'state.json');
+            if (!fs.existsSync(statePath)) {
+              console.log(`[FATAL ERROR] State file missing at: ${statePath}`);
+              throw new Error('Pre-existing state.json is required for this operation.');
+            }
+            console.log(`[CART SCRIPT] Detected state file at: ${statePath}`);
+
+            const browser = await chromium.launch({
+              headless: false,
+              args: ['--disable-blink-features=AutomationControlled']
+            });
+            
+            console.log('[CART SCRIPT] Restoring browser context with saved credentials...');
+            const context = await browser.newContext({
+              storageState: statePath,
+              locale: 'nl-NL',
+              timezoneId: 'Europe/Amsterdam',
+              extraHTTPHeaders: { 'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8' },
+              proxy: {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              }
+            });
+
+            const page = await context.newPage();
+            page.setDefaultTimeout(15000);
+
+            console.log('[CART SCRIPT] Navigating directly to target product...');
+            await page.goto('https://www.bol.com/nl/nl/p/apple-airtag-4-stuks/9300000035840899/', { waitUntil: 'domcontentloaded' });
+            
+            console.log('[CART SCRIPT] Locating cart button...');
+            const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
+            await expect(buyButton).toBeVisible({ timeout: 10000 });
+            
+            console.log('[CART SCRIPT] Clicking "In winkelwagen"...');
+            await buyButton.click();
+            
+            await page.waitForTimeout(3000); // Allow animation to settle
+            
+            console.log('[CART SCRIPT] Loading visual cart summary for session proof...');
+            await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
+            await page.waitForTimeout(2000);
+
+            console.log('[CART SCRIPT] Cart processing finalized successfully! Closing browser.');
+            await browser.close();
+            console.log('[CART SCRIPT] Browser closed. Job done.\n');
+          });
+          EOF
+
+          echo "Initiating execution of bol-cart.spec.js..."
+          xvfb-run npx playwright test bol-cart.spec.js
+
+      - name: "[Cleanup] Update master YAML file with login timestamp"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Modifying data/registered-emails.yml to lock the account..."
+          python <<'PY'
+          import yaml
+          import os
+          from datetime import datetime, timezone
+
+          path = "data/registered-emails.yml"
+          email = os.environ.get("BOL_EMAIL")
+
+          with open(path, "r", encoding="utf-8") as f:
+              data = yaml.safe_load(f) or []
+
+          updated = False
+          now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+          
+          for entry in data:
+              if entry.get("email") == email:
+                  entry["used_to_login"] = True
+                  entry["last_login_at"] = now_str
+                  updated = True
+                  break
+
+          if updated:
+              with open(path, "w", encoding="utf-8") as f:
+                  yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+              print(f"[SUCCESS] Flagged {email} as used.")
+          else:
+              print("[WARNING] Could not locate the manipulated account in the dataset.")
+          PY
+
+      - name: "[Cleanup] Commit and push changes back to repository"
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/registered-emails.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "Automated update: Locked out email $BOL_EMAIL"
+          git push
+
+      - name: "[System] Retain Auth State as downloadable artifact"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-state
+          path: state.json
+          retention-days: 1
