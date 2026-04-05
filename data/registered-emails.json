@@ -4,5 +4,11 @@
     "run_id": "23999605085",
     "repository": "WostGit/bolplaywright",
     "workflow": "Playwright Bol Register + Telegram Screenshots"
+  },
+  {
+    "email": "thijsscholten@qrlfoundation.org",
+    "run_id": "23999737613",
+    "repository": "WostGit/bolplaywright",
+    "workflow": "Playwright Bol Register + Login + Computer Search"
   }
 ]
