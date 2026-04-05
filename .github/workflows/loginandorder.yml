@@ -17,7 +17,7 @@ jobs:
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
-      # Massive trace flags across the whole job
+      # Massive trace flags to show exactly what's happening
       DEBUG: "pw:api,pw:browser,pw:protocol"
 
     steps:
@@ -88,7 +88,6 @@ jobs:
           echo " STEP 0.5: WRITING PROJECT CONFIGS"
           echo "================================================================="
           
-          # Notice we removed the extra stealth packages entirely to stop the line 65 crash
           cat > package.json <<'EOF'
           {
             "name": "bol-flow",
@@ -123,27 +122,27 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       # ========================================================================
-      # STEP 1: CREATE & RUN THE LOGIN JS SCRIPT
+      # COMBINED STEP: LOGIN, TRANSITION TO PRODUCT, AND ADD TO CART
       # ========================================================================
-      - name: "[Step 1] Execute Stealth Login"
+      - name: "[Action] Execute Full Login and Cart Sequence"
         shell: bash
         run: |
           set -euo pipefail
           echo "================================================================="
-          echo " STEP 1: INITIATING LOGIN AND STATE CREATION"
+          echo " STEP 1: LOGGING IN AND PROCEEDING TO ORDER DIRECTLY"
           echo "================================================================="
           
-          cat > bol-login.spec.js <<'EOF'
+          cat > bol-flow.spec.js <<'EOF'
           const { test, expect, chromium } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
 
-          test('Login flow and extract cookies', async () => {
-            console.log('\n[LOGIN LOG] Script started.');
+          test('Full inline chain: login -> product page -> add to cart', async () => {
+            console.log('\n[FLOW LOG] Full flow script started.');
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
             
-            console.log(`[LOGIN LOG] Target account set to: ${email}`);
+            console.log(`[FLOW LOG] Target account set to: ${email}`);
 
             const browser = await chromium.launch({
               headless: false,
@@ -152,7 +151,7 @@ jobs:
                 '--disable-infobars'
               ]
             });
-            console.log('[LOGIN LOG] Browser instance launched successfully.');
+            console.log('[FLOW LOG] Browser instance launched successfully.');
             
             const context = await browser.newContext({
               locale: 'nl-NL',
@@ -164,137 +163,71 @@ jobs:
                 password: process.env.PROXY_PASSWORD
               }
             });
-            console.log('[LOGIN LOG] Context instantiated with static UserAgent and proxy.');
+            console.log('[FLOW LOG] Context instantiated with proxy and static UserAgent.');
 
             const page = await context.newPage();
             page.setDefaultTimeout(30000);
 
-            console.log('[LOGIN LOG] Triggering page.goto to Bol.com homepage...');
-            const response = await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
-            console.log(`[LOGIN LOG] Navigation settled. HTTP Status: ${response.status()}`);
+            // --- STAGE 1: LOG IN ---
+            console.log('[FLOW LOG] Navigating to Bol.com homepage...');
+            await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
             
-            console.log('[LOGIN LOG] Intercepting the cookie wall...');
+            console.log('[FLOW LOG] Handling cookie wall if it pops up...');
             const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
             if (await cookieBtn.isVisible()) {
-              console.log('[LOGIN LOG] Found cookie wall. Tapping accept.');
+              console.log('[FLOW LOG] Cookie wall caught! Clearing it.');
               await cookieBtn.click();
             }
 
-            console.log('[LOGIN LOG] Shifting focus to Inloggen element...');
+            console.log('[FLOW LOG] Clicking Inloggen element...');
             await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click();
             
-            console.log('[LOGIN LOG] Waiting for WSP Login gateway to mount...');
+            console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
             await page.waitForURL('**/wsp/login**', { timeout: 20000 });
-            console.log(`[LOGIN LOG] Routed to: ${page.url()}`);
             
-            console.log('[LOGIN LOG] Injecting strings into the DOM form inputs...');
+            console.log('[FLOW LOG] Injecting user credentials...');
             await page.locator('input#username').fill(email);
             await page.locator('input#password').fill(password);
             
-            console.log('[LOGIN LOG] Clicking proceed submit button...');
+            console.log('[FLOW LOG] Clicking sign in submit button...');
             await page.locator('button#submit').click();
             
-            console.log('[LOGIN LOG] Waiting for return to root landing domain (logged in state)...');
+            console.log('[FLOW LOG] Waiting for return redirection to main domain...');
             await page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 35000 });
-            
-            const statePath = path.join(process.cwd(), 'state.json');
-            console.log(`[LOGIN LOG] Extracting session tree map to: ${statePath}`);
-            await context.storageState({ path: statePath });
+            console.log('[FLOW LOG] User session successfully established!');
 
-            console.log('[LOGIN LOG] Verifying state.json existence on disk...');
-            if (fs.existsSync(statePath)) {
-                console.log(`[LOGIN LOG] Extraction confirmed. File size mapping: ${fs.statSync(statePath).size} bytes.`);
-            } else {
-                throw new Error('[LOGIN LOG] state.json extraction failed to touch disk.');
-            }
-
-            await browser.close();
-            console.log('[LOGIN LOG] Browser torn down safely.\n');
-          });
-          EOF
-
-          xvfb-run npx playwright test bol-login.spec.js
-
-      # ========================================================================
-      # STEP 2: CREATE & RUN THE CART JS SCRIPT
-      # ========================================================================
-      - name: "[Step 2] Execute Add to Cart"
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "================================================================="
-          echo " STEP 2: RESTORING STATE AND EXECUTING ORDER"
-          echo "================================================================="
-
-          cat > bol-cart.spec.js <<'EOF'
-          const { test, expect, chromium } = require('@playwright/test');
-          const fs = require('fs');
-          const path = require('path');
-
-          test('Restore context and operate in active session', async () => {
-            console.log('\n[CART LOG] Cart script active.');
-            
-            const statePath = path.join(process.cwd(), 'state.json');
-            if (!fs.existsSync(statePath)) {
-              throw new Error('[CART LOG] Handshake critical break: state.json was not generated by Step 1.');
-            }
-            console.log(`[CART LOG] Detected active session map at: ${statePath}`);
-
-            const browser = await chromium.launch({
-              headless: false,
-              args: [
-                '--disable-blink-features=AutomationControlled',
-                '--disable-infobars'
-              ]
-            });
-            console.log('[CART LOG] Secondary browser process spawned.');
-            
-            console.log('[CART LOG] Hydrating session storageState into new context...');
-            const context = await browser.newContext({
-              storageState: statePath,
-              locale: 'nl-NL',
-              timezoneId: 'Europe/Amsterdam',
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              proxy: {
-                server: process.env.PROXY_SERVER,
-                username: process.env.PROXY_USERNAME,
-                password: process.env.PROXY_PASSWORD
-              }
-            });
-
-            const page = await context.newPage();
-            page.setDefaultTimeout(30000);
-
-            console.log('[CART LOG] Traversing directly to target product grid...');
+            // --- STAGE 2: STEER TO PRODUCT & ADD TO CART ---
+            console.log('[FLOW LOG] Session carries over. Navigating directly to target product...');
             await page.goto('https://www.bol.com/nl/nl/p/apple-airtag-4-stuks/9300000035840899/', { waitUntil: 'domcontentloaded' });
             
-            console.log('[CART LOG] Awaiting "In winkelwagen" button visibility state...');
+            console.log('[FLOW LOG] Awaiting "In winkelwagen" buy button visibility...');
             const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
             await expect(buyButton).toBeVisible({ timeout: 20000 });
             
-            console.log('[CART LOG] Button identified. Dispatching click payload...');
+            console.log('[FLOW LOG] Clicking to drop item in cart...');
             await buyButton.click();
             
-            console.log('[CART LOG] Sleeping 4000ms for network cart scripts to settle...');
+            console.log('[FLOW LOG] Pausing 4000ms for network updates to conclude...');
             await page.waitForTimeout(4000); 
             
-            console.log('[CART LOG] Loading verify cart overview page...');
+            console.log('[FLOW LOG] Verifying state by loading cart page...');
             await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
-            console.log(`[CART LOG] Cart URL check: ${page.url()}`);
+            console.log(`[FLOW LOG] Landed on cart check: ${page.url()}`);
 
+            console.log('[FLOW LOG] Full sequence completed in continuous session. Shutting down browser.');
             await browser.close();
-            console.log('[CART LOG] Flow path closed smoothly.\n');
+            console.log('[FLOW LOG] Done.\n');
           });
           EOF
 
-          xvfb-run npx playwright test bol-cart.spec.js
+          xvfb-run npx playwright test bol-flow.spec.js
 
       - name: "[Cleanup] Update master YAML file with login timestamp"
         shell: bash
         run: |
           set -euo pipefail
           echo "================================================================="
-          echo " STEP 3: WRAPPING UP AND CLEANING SESSIONS"
+          echo " STEP 2: MARKING ACCOUNT AS USED"
           echo "================================================================="
           python <<'PY'
           import yaml
@@ -320,9 +253,9 @@ jobs:
           if updated:
               with open(path, "w", encoding="utf-8") as f:
                   yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-              print(f"[SUCCESS] Flagged {email} as used in local database.")
+              print(f"[SUCCESS] Flagged {email} as used.")
           else:
-              print("[WARNING] Could not locate the manipulated account in dataset.")
+              print("[WARNING] Could not locate account in dataset.")
           PY
 
       - name: "[Cleanup] Commit and push changes back to repository"
@@ -335,11 +268,3 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "Automated update: Locked out email $BOL_EMAIL"
           git push
-
-      - name: "[System] Retain Auth State as downloadable artifact"
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-state
-          path: state.json
-          retention-days: 1
