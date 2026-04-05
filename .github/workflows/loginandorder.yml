@@ -18,7 +18,6 @@ jobs:
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
-      DEBUG: "pw:api,pw:browser,pw:protocol"
 
     steps:
       - name: "[System] Checkout Repository"
@@ -141,139 +140,107 @@ jobs:
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
             
-            const browser = await chromium.launch({
-              headless: false,
-              args: [
-                '--disable-blink-features=AutomationControlled',
-                '--disable-features=IsolateOrigins,site-per-process'
-              ]
-            });
-            const context = await browser.newContext({
-              locale: 'nl-NL',
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              proxy: {
-                server: process.env.PROXY_SERVER,
-                username: process.env.PROXY_USERNAME,
-                password: process.env.PROXY_PASSWORD
-              }
-            });
+            let attempts = 0;
+            const maxAttempts = 3;
+            let success = false;
 
-            const page = await context.newPage();
-            page.setDefaultTimeout(30000);
-
-            // HELPER: Full DOM Dump Function
-            async function dumpDomAndDie(stageName, error) {
-              console.error(`\n===========================================================`);
-              console.error(`[CRITICAL FAILURE] Stage: ${stageName}`);
-              console.error(`[CRITICAL FAILURE] Error Message: ${error.message}`);
-              console.error(`[CRITICAL FAILURE] URL at crash: ${page.url()}`);
-              console.error(`===========================================================`);
+            while (attempts < maxAttempts && !success) {
+              attempts++;
+              console.log(`\n[FLOW LOG] Starting attempt ${attempts} of ${maxAttempts}...`);
               
+              const browser = await chromium.launch({
+                headless: false,
+                args: [
+                  '--disable-blink-features=AutomationControlled',
+                  '--disable-features=IsolateOrigins,site-per-process',
+                  '--disable-infobars'
+                ]
+              });
+              const context = await browser.newContext({
+                locale: 'nl-NL',
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                proxy: {
+                  server: process.env.PROXY_SERVER,
+                  username: process.env.PROXY_USERNAME,
+                  password: process.env.PROXY_PASSWORD
+                }
+              });
+
+              const page = await context.newPage();
+              page.setDefaultTimeout(30000);
+
               try {
-                const rawDom = await page.evaluate(() => document.documentElement.outerHTML);
-                const sanitizedDom = rawDom.replace(new RegExp(password, 'g'), '***REDACTED_PASSWORD***');
-                console.error(`=================== FULL DOM DUMP START ===================`);
-                console.error(sanitizedDom);
-                console.error(`==================== FULL DOM DUMP END ====================`);
-              } catch (domErr) {
-                console.error(`[CRITICAL ERROR] Failed to pull DOM from browser: ${domErr.message}`);
+                console.log('[FLOW LOG] Navigating to Bol.com homepage...');
+                await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
+                
+                const cookieBtn = page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).first();
+                try {
+                  await cookieBtn.waitFor({ state: 'visible', timeout: 5000 });
+                  await cookieBtn.click();
+                } catch (e) {
+                  // Ignore missing cookie buttons
+                }
+
+                console.log('[FLOW LOG] Clicking Inloggen link...');
+                await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
+                await page.waitForURL('**/wsp/login**', { timeout: 20000 });
+                
+                console.log('[FLOW LOG] Injecting user credentials...');
+                await page.getByRole('textbox', { name: 'E-mailadres' }).fill(email);
+                await page.getByRole('textbox', { name: 'Wachtwoord' }).fill(password);
+                
+                await page.waitForTimeout(500); 
+                await page.getByRole('button', { name: 'Inloggen' }).click();
+
+                console.log('[FLOW LOG] Monitoring for redirection or CAPTCHA...');
+                
+                // Race to detect the bot challenge or successful redirection
+                await Promise.race([
+                  page.waitForURL(/https:\/\/www\.bol\.com\/.*/, { timeout: 30000 }),
+                  page.waitForSelector('text=Ik ben geen robot', { timeout: 30000 }).then(() => {
+                     throw new Error('RETRY_FLOW');
+                  })
+                ]);
+                
+                console.log('[FLOW LOG] Successfully logged in without CAPTCHA.');
+
+                // --- STAGE 3: SEARCH VIA DIRECT URL ---
+                console.log('[FLOW LOG] Navigating directly to EAN search results...');
+                const ean = '9300000035840899';
+                await page.goto(`https://www.bol.com/nl/nl/s/?searchtext=${ean}`, { waitUntil: 'domcontentloaded' });
+                
+                // --- STAGE 4: ADD TO CART ---
+                const productTitleLink = page.locator('[data-test="product-title"]').first();
+                await expect(productTitleLink).toBeVisible({ timeout: 15000 });
+                await productTitleLink.click();
+
+                const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
+                await expect(buyButton).toBeVisible({ timeout: 20000 });
+                await buyButton.click();
+                
+                await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
+                console.log(`[FLOW LOG] Cart page loaded successfully: ${page.url()}`);
+                
+                // If we hit this point without throwing an error, we passed the run!
+                success = true;
+                
+              } catch (err) {
+                if (err.message === 'RETRY_FLOW') {
+                  console.warn(`[WARNING] CAPTCHA detected on attempt ${attempts}. Disconnecting and recycling session...`);
+                } else {
+                  console.error(`[CRITICAL FAILURE] Attempt ${attempts} failed with error: ${err.message}`);
+                }
+              } finally {
+                // FORCE COMPLETE DISCONNECT AND CLOSURE REGARDLESS OF OUTCOME
+                await context.close();
+                await browser.close();
+                console.log(`[FLOW LOG] Session closed for attempt ${attempts}.`);
               }
-              throw error;
             }
 
-            // --- STAGE 1: LOG IN ---
-            try {
-              console.log('[FLOW LOG] Navigating to Bol.com homepage...');
-              await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
-              
-              console.log('[FLOW LOG] Checking for cookie wall...');
-              const cookieBtn = page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).first();
-              try {
-                await cookieBtn.waitFor({ state: 'visible', timeout: 5000 });
-                await cookieBtn.click();
-                console.log('[FLOW LOG] Cookie wall cleared.');
-              } catch (e) {
-                console.log('[FLOW LOG] No cookie wall detected, proceeding.');
-              }
-
-              console.log('[FLOW LOG] Clicking Inloggen link...');
-              await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
-              
-              console.log('[FLOW LOG] Waiting for Login portal to fully load...');
-              await page.waitForURL('**/wsp/login**', { timeout: 20000 });
-              
-              console.log('[FLOW LOG] Locating email and password fields...');
-              const emailField = page.getByRole('textbox', { name: 'E-mailadres' });
-              const passwordField = page.getByRole('textbox', { name: 'Wachtwoord' });
-              const submitBtn = page.getByRole('button', { name: 'Inloggen' });
-              
-              await emailField.waitFor({ state: 'visible', timeout: 10000 });
-              
-              console.log('[FLOW LOG] Injecting user credentials...');
-              await emailField.fill(email);
-              await passwordField.fill(password);
-              
-              await page.waitForTimeout(500); 
-              console.log('[FLOW LOG] Clicking sign in submit button...');
-              await submitBtn.click();
-              
-            } catch (err) {
-              await dumpDomAndDie('Initial Login Setup', err);
+            if (!success) {
+              throw new Error(`Failed to complete flow after ${maxAttempts} attempts due to repetitive CAPTCHAs or errors.`);
             }
-            
-            // --- STAGE 2: ADAPTIVE REDIRECTION CHECK ---
-            console.log('[FLOW LOG] Waiting for return redirection back to Bol.com dashboard or shop...');
-            try {
-              await page.waitForURL(/https:\/\/www\.bol\.com\/.*/, { timeout: 40000 });
-              console.log('[FLOW LOG] Successfully redirected. Login confirmed!');
-            } catch (err) {
-              await dumpDomAndDie('Post-Login Redirect Wait', err);
-            }
-
-            // --- STAGE 3: SEARCH VIA DIRECT URL ---
-            console.log('[FLOW LOG] Navigating directly to EAN search results...');
-            try {
-              const ean = '9300000035840899';
-              await page.goto(`https://www.bol.com/nl/nl/s/?searchtext=${ean}`, { waitUntil: 'domcontentloaded' });
-              console.log('[FLOW LOG] Search page loaded.');
-            } catch (err) {
-              await dumpDomAndDie('Direct Product Search Execution', err);
-            }
-            
-            // --- STAGE 4: ADD TO CART ---
-            console.log('[FLOW LOG] Locating product link...');
-            try {
-              const productTitleLink = page.locator('[data-test="product-title"]').first();
-              await expect(productTitleLink).toBeVisible({ timeout: 15000 });
-              await productTitleLink.click();
-            } catch (err) {
-              await dumpDomAndDie('Clicking Search Result', err);
-            }
-
-            console.log('[FLOW LOG] Awaiting buy button visibility...');
-            try {
-              const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
-              await expect(buyButton).toBeVisible({ timeout: 20000 });
-              
-              await buyButton.hover();
-              await buyButton.click();
-              
-              console.log('[FLOW LOG] Verifying cart state...');
-              const cartCount = page.locator('[data-test="cart-count"]');
-              try {
-                await expect(cartCount).not.toHaveText('0', { timeout: 8000 });
-              } catch (e) {
-                console.log("[FLOW LOG] Cart count didn't flip immediately, proceeding anyway.");
-              }
-
-              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
-              console.log(`[FLOW LOG] Cart page loaded: ${page.url()}`);
-            } catch (err) {
-              await dumpDomAndDie('Adding to Cart Operations', err);
-            }
-
-            console.log('[FLOW LOG] Execution sequence finished successfully.');
-            await browser.close();
           });
           EOF
           
