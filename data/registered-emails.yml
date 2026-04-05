@@ -131,3 +131,10 @@
   used_to_login: false
   created_at: 2026-04-05 14:02:04 UTC
   last_login_at: null
+- email: semschipper@qrlfoundation.org
+  run_id: '24003655067'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-05 14:36:33 UTC
+  last_login_at: null
