@@ -83,10 +83,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "================================================================="
-          echo " STEP 0.5: WRITING PROJECT CONFIGS"
-          echo "================================================================="
-          
           cat > package.json <<'EOF'
           {
             "name": "bol-flow",
@@ -118,9 +114,6 @@ jobs:
         shell: bash
         run: npx playwright install --with-deps chromium
 
-      # ========================================================================
-      # COMBINED STEP: LOGIN, TRANSITION TO PRODUCT, AND ADD TO CART
-      # ========================================================================
       - name: "[Action] Execute Full Login and Cart Sequence"
         shell: bash
         run: |
@@ -131,28 +124,18 @@ jobs:
           
           cat > bol-flow.spec.js <<'EOF'
           const { test, expect, chromium } = require('@playwright/test');
-          const fs = require('fs');
-          const path = require('path');
 
           test('Full inline chain: login -> product search -> add to cart', async () => {
             console.log('\n[FLOW LOG] Full flow script started.');
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
             
-            console.log(`[FLOW LOG] Target account set to: ${email}`);
-
             const browser = await chromium.launch({
               headless: false,
-              args: [
-                '--disable-blink-features=AutomationControlled',
-                '--disable-infobars'
-              ]
+              args: ['--disable-blink-features=AutomationControlled']
             });
-            console.log('[FLOW LOG] Browser instance launched successfully.');
-            
             const context = await browser.newContext({
               locale: 'nl-NL',
-              timezoneId: 'Europe/Amsterdam',
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
               proxy: {
                 server: process.env.PROXY_SERVER,
@@ -160,7 +143,6 @@ jobs:
                 password: process.env.PROXY_PASSWORD
               }
             });
-            console.log('[FLOW LOG] Context instantiated with proxy and static UserAgent.');
 
             const page = await context.newPage();
             page.setDefaultTimeout(30000);
@@ -169,14 +151,12 @@ jobs:
             console.log('[FLOW LOG] Navigating to Bol.com homepage...');
             await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
             
-            console.log('[FLOW LOG] Handling cookie wall if it pops up...');
             const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
             if (await cookieBtn.isVisible()) {
-              console.log('[FLOW LOG] Cookie wall caught! Clearing it.');
               await cookieBtn.click();
             }
 
-            console.log('[FLOW LOG] Clicking Inloggen element with pointer override...');
+            console.log('[FLOW LOG] Clicking Inloggen element...');
             await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click({ force: true });
             
             console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
@@ -190,87 +170,48 @@ jobs:
             await page.locator('button#submit').click();
             
             console.log('[FLOW LOG] Waiting for return redirection to main domain...');
-            await page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 35000 });
-            console.log('[FLOW LOG] User session successfully established!');
+            try {
+              // Exact timeout hook you hit in the logs
+              await page.waitForURL(/https:\/\/www\.bol\.com\/nl\/nl\/.*/, { timeout: 35000 });
+              console.log('[FLOW LOG] User session successfully established!');
+            } catch (err) {
+              console.error(`\n[CRITICAL ERROR] Execution timed out waiting for redirect!`);
+              console.error(`[DEBUG INFO] Current URL halted on: ${page.url()}`);
+              console.error(`[DEBUG INFO] Starting full DOM dump...\n`);
+              
+              try {
+                const rawDom = await page.evaluate(() => document.documentElement.outerHTML);
+                
+                // Sanitize your password out of the DOM if it's still mapped to a value property
+                const sanitizedDom = rawDom.replace(new RegExp(password, 'g'), '***REDACTED_PASSWORD***');
+                
+                console.error(`=================== FULL DOM DUMP START ===================`);
+                console.error(sanitizedDom);
+                console.error(`==================== FULL DOM DUMP END ====================`);
+              } catch (domErr) {
+                console.error(`[CRITICAL ERROR] Failed to evaluate page DOM: ${domErr.message}`);
+              }
+              
+              throw err;
+            }
 
-
-            // --- STAGE 2: ORGANIC SEARCH (With Ultra-Verbose Error Handling) ---
+            // --- STAGE 2: SEARCH ---
             console.log('[FLOW LOG] Finding search bar...');
             const searchBar = page.locator('input#search-key, input[type="search"]').first();
+            await expect(searchBar).toBeVisible({ timeout: 15000 });
+            await searchBar.fill('9300000035840899'); 
+            await page.keyboard.press('Enter');
+            await page.waitForURL('**/s/?searchtext=**', { timeout: 20000 });
             
-            try {
-              await expect(searchBar).toBeVisible({ timeout: 15000 });
-            } catch (err) {
-              console.error(`\n[CRITICAL ERROR] Failed while waiting for Search Bar!`);
-              console.error(`[DEBUG INFO] Current URL is: ${page.url()}`);
-              console.error(`[DEBUG INFO] Reason: ${err.message}\n`);
-              throw err;
-            }
-            
-            console.log('[FLOW LOG] Typing product EAN/Title into search...');
-            try {
-              await searchBar.fill('9300000035840899'); 
-              await page.keyboard.press('Enter');
-            } catch (err) {
-              console.error(`\n[CRITICAL ERROR] Failed to type into the search bar!`);
-              console.error(`[DEBUG INFO] HTML state of bar: ${await searchBar.evaluate(el => el.outerHTML).catch(() => 'unreadable')}`);
-              throw err;
-            }
-            
-            console.log('[FLOW LOG] Waiting for search results to process...');
-            try {
-              await page.waitForURL('**/s/?searchtext=**', { timeout: 20000 });
-            } catch (err) {
-              console.error(`\n[CRITICAL ERROR] The site did not transition to the search results page!`);
-              console.error(`[DEBUG INFO] Stuck at URL: ${page.url()}`);
-              throw err;
-            }
-            
-            console.log('[FLOW LOG] Locating product in search results...');
-            const productTitleLink = page.locator('a.product-title').first();
-            
-            try {
-              await expect(productTitleLink).toBeVisible({ timeout: 15000 });
-              console.log('[FLOW LOG] Clicking the top search result product...');
-              await productTitleLink.click();
-            } catch (err) {
-              console.error(`\n[CRITICAL ERROR] Failed to locate or click the product in search results!`);
-              console.error(`[DEBUG INFO] Current URL: ${page.url()}`);
-              console.error(`[DEBUG INFO] Did the page load items? Check via logs or take screenshot.`);
-              throw err;
-            }
-            
-
-            // --- STAGE 3: ADD TO CART (With Ultra-Verbose Error Handling) ---
-            console.log('[FLOW LOG] Awaiting "In winkelwagen" buy button visibility...');
+            // --- STAGE 3: ADD TO CART ---
+            await page.locator('a.product-title').first().click();
             const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
-            
-            try {
-              await expect(buyButton).toBeVisible({ timeout: 20000 });
-            } catch (err) {
-              console.error(`\n[CRITICAL ERROR] The "In winkelwagen" button never appeared!`);
-              console.error(`[DEBUG INFO] Failed on URL: ${page.url()}`);
-              console.error(`[DEBUG INFO] This usually means we got logged out, blocked by anti-bot, or navigated to a broken page.`);
-              throw err;
-            }
-            
-            console.log('[FLOW LOG] Clicking to drop item in cart...');
-            try {
-              await buyButton.click();
-            } catch (err) {
-              console.error(`\n[CRITICAL ERROR] Failed to actually click the buy button.`);
-              console.error(`[DEBUG INFO] Button HTML: ${await buyButton.evaluate(el => el.outerHTML).catch(() => 'unreadable')}`);
-              throw err;
-            }
-            
-            console.log('[FLOW LOG] Pausing 4000ms for network updates to conclude...');
+            await expect(buyButton).toBeVisible({ timeout: 20000 });
+            await buyButton.click();
             await page.waitForTimeout(4000); 
-            
-            console.log('[FLOW LOG] Verifying state by loading cart page...');
             await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
             console.log(`[FLOW LOG] Landed on cart check: ${page.url()}`);
 
-            console.log('[FLOW LOG] Full sequence completed in continuous session. Shutting down browser.');
             await browser.close();
             console.log('[FLOW LOG] Done.\n');
           });
@@ -282,9 +223,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "================================================================="
-          echo " STEP 2: MARKING ACCOUNT AS USED"
-          echo "================================================================="
           python <<'PY'
           import yaml
           import os
@@ -309,9 +247,6 @@ jobs:
           if updated:
               with open(path, "w", encoding="utf-8") as f:
                   yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-              print(f"[SUCCESS] Flagged {email} as used.")
-          else:
-              print("[WARNING] Could not locate account in dataset.")
           PY
 
       - name: "[Cleanup] Commit and push changes back to repository"
