@@ -1,4 +1,4 @@
-name: Playwright Bol Register Smart Fast
+name: Playwright Bol Register via Secrets + Telegram
 
 on:
   workflow_dispatch:
@@ -22,18 +22,31 @@ jobs:
 
       BOL_SALUTATION: "UNKNOWN"
       BOL_COUNTRY_MODE: "NL"
-      BOL_PASSWORD: "StrongPass123!"
       BOL_PURCHASE_NEWSLETTER: "true"
       BOL_RECOMMENDATION_NEWSLETTER: "false"
       SUBMIT_FORM: "true"
 
-      PROXY_SERVER: "https://core-residential.evomi-proxy.com:1001"
-      PROXY_USERNAME: "1999nicos5"
-      PROXY_PASSWORD: "aVvm0qmyoPMyX7GSVIOu_country-NL"
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+      BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PROXY_SERVER" || { echo "Missing secret PROXY_SERVER"; exit 1; }
+          test -n "$PROXY_USERNAME" || { echo "Missing secret PROXY_USERNAME"; exit 1; }
+          test -n "$PROXY_PASSWORD" || { echo "Missing secret PROXY_PASSWORD"; exit 1; }
+          test -n "$BOL_PASSWORD" || { echo "Missing secret BOL_PASSWORD"; exit 1; }
+          test -n "$TELEGRAM_BOT_TOKEN" || { echo "Missing secret TELEGRAM_BOT_TOKEN"; exit 1; }
+          test -n "$TELEGRAM_CHAT_ID" || { echo "Missing secret TELEGRAM_CHAT_ID"; exit 1; }
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -57,7 +70,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/nl-addresses
-          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v2
+          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v4
           restore-keys: |
             ${{ runner.os }}-nl-addresses-ljpc-
 
@@ -171,8 +184,6 @@ jobs:
           row = random_address_from_local_zstd_csv(DATASET_FILE)
           postcode = (row.get("postcode") or "").strip().replace(" ", "").upper()
           huisnummer = (row.get("huisnummer") or "").strip()
-          straat = (row.get("straat") or "").strip()
-          woonplaats = (row.get("woonplaats") or "").strip()
 
           phone = "06" + "".join(str(random.randint(0, 9)) for _ in range(8))
           email = f"{sanitize_email_part(first_name)}{sanitize_email_part(last_name)}@qrlfoundation.org"
@@ -185,18 +196,11 @@ jobs:
               "birthday": "",
               "infix": "",
               "postcode": postcode,
-              "huisnummer": huisnummer,
-              "straat": straat,
-              "woonplaats": woonplaats
+              "huisnummer": huisnummer
           }
 
           with open("random-nl-house.json", "w", encoding="utf-8") as f:
               json.dump(result, f, indent=2, ensure_ascii=False)
-
-          with open("random-nl-house.txt", "w", encoding="utf-8") as f:
-              f.write("Generated registration identity\n")
-              for k, v in result.items():
-                  f.write(f"{k}: {v}\n")
 
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
               f.write(f'BOL_FIRST_NAME={first_name}\n')
@@ -207,8 +211,6 @@ jobs:
               f.write(f'BOL_EMAIL={email}\n')
               f.write(f'BOL_POSTAL_CODE={postcode}\n')
               f.write(f'BOL_STREET_NUMBER={huisnummer}\n')
-
-          print(json.dumps(result, indent=2, ensure_ascii=False))
           PY
           python random_nl_house.py
 
@@ -300,9 +302,9 @@ jobs:
             }
 
             const formData = {
-              firstName: process.env.BOL_FIRST_NAME || 'Jan',
+              firstName: process.env.BOL_FIRST_NAME || '',
               infix: process.env.BOL_INFIX || '',
-              lastName: process.env.BOL_LAST_NAME || 'Dijk',
+              lastName: process.env.BOL_LAST_NAME || '',
               salutation: (process.env.BOL_SALUTATION || 'UNKNOWN').toUpperCase(),
               countryMode: (process.env.BOL_COUNTRY_MODE || 'NL').toUpperCase(),
               postalCode: (process.env.BOL_POSTAL_CODE || '').replace(/\s+/g, '').toUpperCase(),
@@ -310,7 +312,7 @@ jobs:
               phone: process.env.BOL_PHONE || '',
               birthday: process.env.BOL_BIRTHDAY || '',
               email: process.env.BOL_EMAIL || '',
-              password: process.env.BOL_PASSWORD || 'StrongPass123!',
+              password: process.env.BOL_PASSWORD || '',
               purchaseNewsletter: String(process.env.BOL_PURCHASE_NEWSLETTER || 'true').toLowerCase() === 'true',
               recommendationNewsletter: String(process.env.BOL_RECOMMENDATION_NEWSLETTER || 'false').toLowerCase() === 'true',
               submit: String(process.env.SUBMIT_FORM || 'false').toLowerCase() === 'true'
@@ -324,39 +326,14 @@ jobs:
                   return;
                 } catch (err) {
                   lastErr = err;
-                  console.log(`goto attempt ${i} failed: ${err.message}`);
                   await page.waitForTimeout(2000 * i);
                 }
               }
               throw lastErr;
             }
 
-            async function waitForStable() {
-              await page.waitForTimeout(1000);
-              await page.waitForLoadState('networkidle').catch(() => {});
-            }
-
-            async function dismissCookieOrModalIfPresent() {
-              const candidates = [
-                page.getByRole('button', { name: /accepteren|accept|akkoord|ok|toestaan/i }),
-                page.getByRole('button', { name: /alles accepteren|accept all/i }),
-                page.locator('button:has-text("Accepteren")'),
-                page.locator('button:has-text("Akkoord")')
-              ];
-              for (const locator of candidates) {
-                try {
-                  if (await locator.first().isVisible({ timeout: 1000 })) {
-                    await locator.first().click();
-                    await page.waitForTimeout(500);
-                    break;
-                  }
-                } catch {}
-              }
-            }
-
             async function fillByNameOrLabel(fieldNames, labelRegex, value) {
               if (value === undefined || value === null) return false;
-
               for (const name of fieldNames) {
                 const byName = page.locator(`[name="${name}"]`).first();
                 if (await byName.count()) {
@@ -366,7 +343,6 @@ jobs:
                   return true;
                 }
               }
-
               try {
                 const byLabel = page.getByLabel(labelRegex).first();
                 if (await byLabel.count()) {
@@ -376,18 +352,15 @@ jobs:
                   return true;
                 }
               } catch {}
-
               return false;
             }
 
             async function setCheckboxById(id, desired) {
               const button = page.locator(`button#${id}[role="checkbox"]`).first();
               if (!(await button.count())) return false;
-              await button.scrollIntoViewIfNeeded();
               const checked = (await button.getAttribute('aria-checked')) === 'true';
               if (checked !== desired) {
                 await button.click();
-                await page.waitForTimeout(200);
               }
               return true;
             }
@@ -413,13 +386,8 @@ jobs:
             }
 
             async function selectCountryTab(mode) {
-              const map = {
-                NL: /nederland/i,
-                BE: /belgië|belgie/i,
-                WORLD: /wereld/i
-              };
-              const pattern = map[mode] || map.NL;
-              const tab = page.getByRole('tab', { name: pattern }).first();
+              const map = { NL: /nederland/i, BE: /belgië|belgie/i, WORLD: /wereld/i };
+              const tab = page.getByRole('tab', { name: map[mode] || map.NL }).first();
               if (await tab.count()) {
                 await tab.click();
                 await page.waitForTimeout(800);
@@ -432,114 +400,48 @@ jobs:
               const street = await page.locator('[name="NLstreet"]').inputValue().catch(() => '');
               const city = await page.locator('[name="NLcity"]').inputValue().catch(() => '');
               const notFoundVisible = await page.locator('text=Geen adres gevonden').first().isVisible().catch(() => false);
-              const notFoundDescVisible = await page.locator('text=Er is geen adres gevonden met de opgegeven postcode en huisnummer').first().isVisible().catch(() => false);
-
               return {
                 street: street.trim(),
                 city: city.trim(),
-                notFoundVisible,
-                notFoundDescVisible,
-                success: !!street.trim() && !!city.trim() && !notFoundVisible && !notFoundDescVisible
+                success: !!street.trim() && !!city.trim() && !notFoundVisible
               };
             }
 
             await gotoWithRetry('https://login.bol.com/wsp/register', 3);
-            await waitForStable();
-            await dismissCookieOrModalIfPresent();
+            await expect(page.locator('form')).toBeVisible();
             await snap('opened-register-page');
 
-            await expect(page).toHaveURL(/login\.bol\.com\/wsp\/register/);
-            await expect(page.locator('form')).toBeVisible();
-            await snap('form-visible');
-
             await selectSalutation(formData.salutation);
-            await snap('salutation-set');
-
             await fillByNameOrLabel(['firstName'], /voornaam/i, formData.firstName);
-            await page.waitForTimeout(250);
-            await snap('first-name-filled');
-
-            if (formData.infix) {
-              await fillByNameOrLabel(['infix'], /tussenvoegsel/i, formData.infix);
-              await page.waitForTimeout(250);
-              await snap('infix-filled');
-            }
-
+            if (formData.infix) await fillByNameOrLabel(['infix'], /tussenvoegsel/i, formData.infix);
             await fillByNameOrLabel(['lastName'], /achternaam/i, formData.lastName);
-            await page.waitForTimeout(250);
-            await snap('last-name-filled');
-
             await selectCountryTab(formData.countryMode);
-            await snap('country-tab-selected');
 
-            if (formData.countryMode === 'NL') {
-              if (!formData.postalCode || !formData.streetNumber) {
-                throw new Error('Missing BOL_POSTAL_CODE or BOL_STREET_NUMBER from dataset step.');
-              }
+            await fillByNameOrLabel(['NLpostalCode'], /postcode/i, formData.postalCode);
+            await fillByNameOrLabel(['NLstreetNumber'], /huisnummer/i, formData.streetNumber);
+            await page.waitForTimeout(2500);
 
-              await fillByNameOrLabel(['NLpostalCode'], /postcode/i, formData.postalCode);
-              await page.waitForTimeout(250);
-              await snap('nl-postcode-filled');
-
-              await fillByNameOrLabel(['NLstreetNumber'], /huisnummer/i, formData.streetNumber);
-              await page.waitForTimeout(300);
-              await snap('nl-house-number-filled');
-
-              await page.waitForTimeout(2500);
-
-              const addressState = await getAddressState();
-              console.log('ADDRESS_STATE=' + JSON.stringify(addressState, null, 2));
-              await testInfo.attach('address-state.json', {
-                body: Buffer.from(JSON.stringify(addressState, null, 2)),
-                contentType: 'application/json'
-              });
-
-              if (!addressState.success) {
-                throw new Error(
-                  `Dataset address was rejected by bol. postcode=${formData.postalCode} huisnummer=${formData.streetNumber}`
-                );
-              }
-
-              await snap('nl-address-resolved');
+            const addressState = await getAddressState();
+            if (!addressState.success) {
+              throw new Error(`Dataset address was rejected by bol. postcode=${formData.postalCode} huisnummer=${formData.streetNumber}`);
             }
 
             await fillByNameOrLabel(['phone'], /telefoonnummer/i, formData.phone);
-            await page.waitForTimeout(250);
-            await snap('phone-filled');
-
-            if (formData.birthday) {
-              await fillByNameOrLabel(['birthday'], /geboortedatum/i, formData.birthday);
-              await page.waitForTimeout(250);
-              await snap('birthday-filled');
-            }
-
+            if (formData.birthday) await fillByNameOrLabel(['birthday'], /geboortedatum/i, formData.birthday);
             await fillByNameOrLabel(['email'], /email/i, formData.email);
-            await page.waitForTimeout(250);
-            await snap('email-filled');
-
             await fillByNameOrLabel(['password'], /wachtwoord/i, formData.password);
-            await page.waitForTimeout(400);
-            await snap('password-filled');
-
             await setCheckboxById('purchaseNewsletter', formData.purchaseNewsletter);
-            await snap('purchase-newsletter-set');
-
             await setCheckboxById('recommendationNewsletter', formData.recommendationNewsletter);
-            await snap('recommendation-newsletter-set');
 
-            await snap('final-filled-state');
+            await snap('before-submit');
 
             if (formData.submit) {
               const submitButton = page.getByRole('button', { name: /registreer/i }).first();
-              await expect(submitButton).toBeVisible();
               await submitButton.scrollIntoViewIfNeeded();
               await page.waitForTimeout(500);
-              await snap('before-submit');
               await submitButton.click();
               await page.waitForTimeout(4000);
               await snap('after-submit');
-            } else {
-              console.log('SUBMIT_FORM=false, skipping submit by design.');
             }
           });
           EOF
@@ -548,45 +450,36 @@ jobs:
         shell: bash
         run: npx playwright test
 
-      - name: Add result to job summary
+      - name: Send Telegram success message
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="bol account workflow succeeded%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
+
+      - name: Send Telegram failure message
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="bol account workflow failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Send screenshot to Telegram
         if: always()
         shell: bash
         run: |
-          {
-            echo "# Playwright bol register run"
-            echo
-            echo "- Cache hit: \`${{ steps.cache-dataset.outputs.cache-hit }}\`"
-            echo "- Postcode: \`${BOL_POSTAL_CODE:-}\`"
-            echo "- Huisnummer: \`${BOL_STREET_NUMBER:-}\`"
-            echo "- First name: \`${BOL_FIRST_NAME:-}\`"
-            echo "- Last name: \`${BOL_LAST_NAME:-}\`"
-            echo "- Email: \`${BOL_EMAIL:-}\`"
-            echo "- Phone: \`${BOL_PHONE:-}\`"
-            echo "- Proxy server: \`${PROXY_SERVER:-}\`"
-            echo "- Submit form: \`${SUBMIT_FORM:-}\`"
-            echo
-            if [ -f random-nl-house.txt ]; then
-              cat random-nl-house.txt
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload generated identity JSON
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: random-nl-house-json
-          path: random-nl-house.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload generated identity text
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: random-nl-house-text
-          path: random-nl-house.txt
-          if-no-files-found: warn
-          retention-days: 14
+          set -euo pipefail
+          FILE=$(find test-results -type f -name '*.png' | head -n 1 || true)
+          if [ -n "${FILE:-}" ]; then
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" \
+              -F chat_id="${TELEGRAM_CHAT_ID}" \
+              -F photo=@"$FILE" \
+              -F caption="Workflow screenshot"
+          fi
 
       - name: Upload Playwright report
         if: always()
