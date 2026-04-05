@@ -69,7 +69,6 @@ jobs:
           with open(path, "r", encoding="utf-8") as f:
               data = yaml.safe_load(f) or []
 
-          # Find the first account that hasn't been used to log in yet
           target_account = None
           for entry in data:
               if not entry.get("used_to_login", False):
@@ -83,7 +82,6 @@ jobs:
           email = target_account["email"]
           print(f"Found account for login: {email}")
 
-          # Export it to GITHUB_ENV for Playwright and subsequent steps
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
               f.write(f"BOL_EMAIL={email}\n")
           PY
@@ -118,9 +116,9 @@ jobs:
           const { defineConfig, devices } = require('@playwright/test');
           module.exports = defineConfig({
             testDir: './tests',
-            timeout: 120000,
+            timeout: 240000, // Extended since we are doing manual retries inside the test
             expect: { timeout: 15000 },
-            retries: process.env.CI ? 1 : 0,
+            retries: 0, // Turning off Playwright's native retries to use our custom loop
             reporter: [['html', { open: 'never' }], ['list']],
             use: {
               headless: false, 
@@ -134,25 +132,13 @@ jobs:
               },
               screenshot: 'only-on-failure',
               trace: 'retain-on-failure',
-              video: 'retain-on-failure',
-              proxy: {
-                server: process.env.PROXY_SERVER,
-                username: process.env.PROXY_USERNAME,
-                password: process.env.PROXY_PASSWORD
-              }
+              video: 'retain-on-failure'
             },
             projects: [
               {
                 name: 'chromium',
                 use: { 
-                  ...devices['Desktop Chrome'],
-                  launchOptions: {
-                    args: [
-                      '--disable-blink-features=AutomationControlled',
-                      '--no-sandbox',
-                      '--disable-infobars'
-                    ]
-                  }
+                  ...devices['Desktop Chrome']
                 }
               }
             ]
@@ -169,18 +155,10 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('login only and verify success', async ({ page }, testInfo) => {
+          test('login only and verify success', async ({ browser }, testInfo) => {
             const screenshotDir = path.join(process.cwd(), 'login-screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
             let step = 1;
-
-            async function snap(name) {
-              const file = path.join(screenshotDir, `${String(step).padStart(2, '0')}-${name}.png`);
-              await page.screenshot({ path: file, fullPage: true });
-              console.log(`[STEP ${step}] Screenshot saved: ${file}`);
-              step += 1;
-              return file;
-            }
 
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
@@ -192,91 +170,133 @@ jobs:
               throw new Error("Missing BOL_EMAIL or BOL_PASSWORD environment variables.");
             }
 
-            await page.addInitScript(() => {
-              Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            });
+            const maxAttempts = 3;
+            let success = false;
 
-            console.log('Navigating to bol.com login page...');
-            await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await page.waitForTimeout(3000); 
-            await snap('opened-login-page');
-
-            console.log(`Current URL: ${page.url()}`);
-
-            console.log('Checking for cookie consent buttons...');
-            const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
-            try {
-              if (await cookieBtn.isVisible({ timeout: 3000 })) {
-                console.log('Cookie banner detected. Clicking accept...');
-                await cookieBtn.click();
-                await page.waitForTimeout(1000);
-                await snap('clicked-cookie-banner');
-              }
-            } catch (err) {
-              console.log(`Cookie handling skipped: ${err.message}`);
-            }
-            await snap('after-cookies');
-
-            if (page.url().includes('/nl/nl/') || !page.url().includes('/wsp/login')) {
-                console.log('Redirected! Looking for storefront login button...');
-                const navLoginBtn = page.locator('a:has-text("Inloggen"), button:has-text("Inloggen"), [data-test="login-link"]').first();
-                
-                if (await navLoginBtn.isVisible({ timeout: 5000 })) {
-                     console.log('Found login button. Hovering and clicking...');
-                     await navLoginBtn.hover();
-                     await page.waitForTimeout(500);
-                     await navLoginBtn.click();
-                     await page.waitForTimeout(5000);
-                     await snap('after-storefront-login-click');
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              console.log(`\nStarting Attempt ${attempt} of ${maxAttempts}...`);
+              
+              // 1. Create a fresh context (this forces a clean connection/new IP if your proxy rotates on connect)
+              const context = await browser.newContext({
+                proxy: {
+                  server: process.env.PROXY_SERVER,
+                  username: process.env.PROXY_USERNAME,
+                  password: process.env.PROXY_PASSWORD
                 }
+              });
+              
+              const page = await context.newPage();
+
+              async function snap(name) {
+                const file = path.join(screenshotDir, `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`);
+                await page.screenshot({ path: file, fullPage: true });
+                console.log(`[STEP ${step}] Screenshot saved: ${file}`);
+                step += 1;
+                return file;
+              }
+
+              try {
+                await page.addInitScript(() => {
+                  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                });
+
+                console.log('Navigating to bol.com login page...');
+                await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
+                await page.waitForTimeout(3000); 
+                await snap('opened-login-page');
+
+                // Check for Captcha / Block
+                const bodyText = await page.innerText('body');
+                if (bodyText.includes('captcha') || bodyText.includes('robot') || bodyText.includes('unusual traffic')) {
+                  console.log('⚠️ Captcha or Block detected! Recycling proxy and trying again.');
+                  await context.close();
+                  continue; // Restarts loop with a fresh context
+                }
+
+                console.log('Checking for cookie consent buttons...');
+                const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
+                if (await cookieBtn.isVisible({ timeout: 3000 })) {
+                  console.log('Cookie banner detected. Clicking accept...');
+                  await cookieBtn.click();
+                  await page.waitForTimeout(1000);
+                  await snap('clicked-cookie-banner');
+                }
+                await snap('after-cookies');
+
+                if (page.url().includes('/nl/nl/') || !page.url().includes('/wsp/login')) {
+                    console.log('Redirected! Looking for storefront login button...');
+                    const navLoginBtn = page.locator('a:has-text("Inloggen"), button:has-text("Inloggen"), [data-test="login-link"]').first();
+                    
+                    if (await navLoginBtn.isVisible({ timeout: 5000 })) {
+                         console.log('Found login button. Hovering and clicking...');
+                         await navLoginBtn.hover();
+                         await page.waitForTimeout(500);
+                         await navLoginBtn.click();
+                         await page.waitForTimeout(5000);
+                         await snap('after-storefront-login-click');
+                    }
+                }
+
+                console.log('Locating credentials fields...');
+                const emailInput = page.locator('input#username, input[name="j_username"]').first();
+                await expect(emailInput).toBeVisible({ timeout: 15000 });
+
+                console.log('Simulating human mouse movement to email input...');
+                await emailInput.hover();
+                await page.waitForTimeout(400);
+
+                console.log('Typing email with human delays...');
+                await emailInput.click();
+                await page.keyboard.type(email, { delay: 100 }); 
+                await page.waitForTimeout(600);
+
+                const passwordInput = page.locator('input#password, input[name="j_password"]').first();
+                await passwordInput.hover();
+                await page.waitForTimeout(300);
+                
+                console.log('Typing password with human delays...');
+                await passwordInput.click();
+                await page.keyboard.type(password, { delay: 120 });
+                
+                console.log('Credentials filled successfully.');
+                await snap('credentials-filled');
+
+                const loginBtn = page.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen")').first();
+                await loginBtn.hover();
+                await page.waitForTimeout(500);
+                await snap('ready-to-click-login');
+                
+                console.log('Clicking the login button...');
+                await loginBtn.click();
+                
+                console.log('Waiting 6 seconds for navigation...');
+                await page.waitForTimeout(6000);
+                await snap('after-login-attempt');
+
+                const currentUrl = page.url();
+                console.log(`Current URL after login attempt: ${currentUrl}`);
+                
+                if (currentUrl.includes('/wsp/login')) {
+                    console.log('❌ Still on login page. Might be a soft block or bad credentials. Retrying with new proxy...');
+                    await context.close();
+                    continue;
+                }
+
+                console.log('🎉 SUCCESS: Navigated away from login page!');
+                success = true;
+                await context.close();
+                break; // Break the retry loop on success
+
+              } catch (err) {
+                console.log(`⚠️ Attempt ${attempt} encountered an error: ${err.message}`);
+                await context.close(); // Close proxy connection
+                if (attempt === maxAttempts) throw err; // Bubble up error if out of tries
+              }
             }
 
-            console.log('Locating credentials fields...');
-            const emailInput = page.locator('input#username, input[name="j_username"]').first();
-            await expect(emailInput).toBeVisible({ timeout: 15000 });
-
-            console.log('Simulating human mouse movement to email input...');
-            await emailInput.hover();
-            await page.waitForTimeout(400);
-
-            console.log('Typing email with human delays...');
-            await emailInput.click();
-            await page.keyboard.type(email, { delay: 100 }); 
-            await page.waitForTimeout(600);
-
-            const passwordInput = page.locator('input#password, input[name="j_password"]').first();
-            await passwordInput.hover();
-            await page.waitForTimeout(300);
-            
-            console.log('Typing password with human delays...');
-            await passwordInput.click();
-            await page.keyboard.type(password, { delay: 120 });
-            
-            console.log('Credentials filled successfully.');
-            await snap('credentials-filled');
-
-            const loginBtn = page.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen")').first();
-            await loginBtn.hover();
-            await page.waitForTimeout(500);
-            await snap('ready-to-click-login');
-            
-            console.log('Clicking the login button...');
-            await loginBtn.click();
-            
-            console.log('Waiting 6 seconds for navigation...');
-            await page.waitForTimeout(6000);
-            await snap('after-login-attempt');
-
-            console.log('Analyzing result page...');
-            const currentUrl = page.url();
-            console.log(`Current URL after login attempt: ${currentUrl}`);
-            
-            if (currentUrl.includes('/wsp/login')) {
-                console.log('❌ FAILED: Still on the login page.');
-                throw new Error('Login failed: Still on the login page.');
+            if (!success) {
+              throw new Error('Failed to log in after max proxy rotation attempts.');
             }
-
-            console.log('🎉 SUCCESS: Navigated away from login page!');
             console.log('--- LOGIN TEST END ---');
           });
           EOF
@@ -291,14 +311,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
           if [ ! -d "login-screenshots" ] || [ -z "$(ls -A login-screenshots/*.png 2>/dev/null)" ]; then
             echo "No screenshots found to upload."
             exit 0
           fi
           
           echo "Found screenshots. Sending to Telegram..."
-          
           for img in login-screenshots/*.png; do
             filename=$(basename "$img")
             echo "Uploading $filename..."
