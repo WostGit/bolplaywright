@@ -17,6 +17,7 @@ jobs:
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+      # Optional for notifications
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
@@ -48,9 +49,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "================================================================"
-          echo " Starting Python extraction of data/registered-emails.yml"
-          echo "================================================================"
+          echo "================================================================="
+          echo " STEP 0: EXTRACTING EMAIL ADDRESS"
+          echo "================================================================="
           python <<'PY'
           import yaml
           import os
@@ -70,7 +71,7 @@ jobs:
                   break
 
           if not target_account:
-              print("[FATAL ERROR] No unused accounts available for login! All are marked as true.")
+              print("[FATAL ERROR] No unused accounts available for login!")
               exit(1)
 
           email = target_account["email"]
@@ -84,7 +85,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Creating package.json..."
+          echo "================================================================="
+          echo " STEP 0.5: WRITING PROJECT CONFIGS"
+          echo "================================================================="
+          
           cat > package.json <<'EOF'
           {
             "name": "bol-flow",
@@ -96,8 +100,8 @@ jobs:
             }
           }
           EOF
+          echo "[INFO] package.json created."
 
-          echo "Creating playwright.config.js..."
           cat > playwright.config.js <<'EOF'
           const { defineConfig } = require('@playwright/test');
           module.exports = defineConfig({
@@ -110,14 +114,19 @@ jobs:
             projects: [{ name: 'chromium' }]
           });
           EOF
+          echo "[INFO] playwright.config.js created."
 
       - name: "[System] Install Node Dependencies"
         shell: bash
-        run: npm install
+        run: |
+          echo "Running npm install..."
+          npm install
 
       - name: "[System] Install Playwright Chromium with deps"
         shell: bash
-        run: npx playwright install --with-deps chromium
+        run: |
+          echo "Downloading Chromium and system dependencies..."
+          npx playwright install --with-deps chromium
 
       # ========================================================================
       # STEP 1: CREATE & RUN THE LOGIN JS SCRIPT
@@ -126,8 +135,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "================================================================="
+          echo " STEP 1: INITIATING LOGIN AND STATE CREATION"
+          echo "================================================================="
           
-          # We place the script directly at the project root! No subfolder.
           cat > bol-login.spec.js <<'EOF'
           const { test, expect } = require('@playwright/test');
           const { chromium } = require('playwright-extra');
@@ -137,72 +148,84 @@ jobs:
           
           chromium.use(StealthPlugin());
 
-          test('Login flow with proxy and save state.json', async () => {
-            console.log('\n[LOGIN SCRIPT] --- STARTING ---');
+          test('Login flow and extract cookies', async () => {
+            console.log('\n[LOGIN LOG] Script started.');
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
             
-            console.log(`[LOGIN SCRIPT] Attempting login with: ${email}`);
+            console.log(`[LOGIN LOG] Target account set to: ${email}`);
+            console.log(`[LOGIN LOG] Proxy server set to: ${process.env.PROXY_SERVER}`);
 
             const browser = await chromium.launch({
               headless: false,
               args: ['--disable-blink-features=AutomationControlled']
             });
+            console.log('[LOGIN LOG] Browser instance launched successfully.');
             
             const context = await browser.newContext({
               locale: 'nl-NL',
               timezoneId: 'Europe/Amsterdam',
-              extraHTTPHeaders: { 'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8' },
               proxy: {
                 server: process.env.PROXY_SERVER,
                 username: process.env.PROXY_USERNAME,
                 password: process.env.PROXY_PASSWORD
               }
             });
+            console.log('[LOGIN LOG] Browser context instantiated with localized variables and proxy.');
 
             const page = await context.newPage();
-            page.setDefaultTimeout(15000);
+            page.setDefaultTimeout(20000);
 
-            console.log('[LOGIN SCRIPT] Navigating to Bol homepage...');
+            console.log('[LOGIN LOG] Navigating to Bol.com main domain...');
             await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
+            console.log(`[LOGIN LOG] Landed on initial URL: ${page.url()}`);
             
-            console.log('[LOGIN SCRIPT] Handling cookie popups if present...');
+            console.log('[LOGIN LOG] Checking for cookie wall...');
             const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
             if (await cookieBtn.isVisible()) {
-              console.log('[LOGIN SCRIPT] Clicked cookie accept.');
+              console.log('[LOGIN LOG] Cookie wall found! Clicking accept button.');
               await cookieBtn.click();
+            } else {
+              console.log('[LOGIN LOG] No cookie wall active or visible. Proceeding.');
             }
 
-            console.log('[LOGIN SCRIPT] Clicking "Inloggen" button...');
+            console.log('[LOGIN LOG] Locating storefront login button...');
             await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click();
             
-            console.log('[LOGIN SCRIPT] Waiting for login form to load...');
+            console.log('[LOGIN LOG] Waiting for WSP Login Redirection...');
             await page.waitForURL('**/wsp/login**');
+            console.log(`[LOGIN LOG] Successfully routed to login secure hub: ${page.url()}`);
             
-            console.log('[LOGIN SCRIPT] Typing credentials...');
+            console.log('[LOGIN LOG] Injecting username/password strings...');
             await page.locator('input#username').fill(email);
             await page.locator('input#password').fill(password);
             
-            console.log('[LOGIN SCRIPT] Submitting login form...');
+            console.log('[LOGIN LOG] Clicking submit...');
             await page.locator('button#submit').click();
             
-            console.log('[LOGIN SCRIPT] Waiting for redirection back to homepage...');
-            await page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 20000 });
+            console.log('[LOGIN LOG] Waiting for post-login return to homepage...');
+            await page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 25000 });
             
-            const currentUrl = page.url();
-            console.log(`[LOGIN SCRIPT] Successfully landed at: ${currentUrl}`);
+            console.log(`[LOGIN LOG] Secure handshake complete! Final destination: ${page.url()}`);
             
             const statePath = path.join(process.cwd(), 'state.json');
-            console.log(`[LOGIN SCRIPT] Saving storage state to: ${statePath}`);
+            console.log(`[LOGIN LOG] Dumping session cookies and site local storage to: ${statePath}`);
             await context.storageState({ path: statePath });
 
+            console.log('[LOGIN LOG] Verifying state.json was physically created...');
+            if (fs.existsSync(statePath)) {
+                console.log(`[LOGIN LOG] Verified! File size: ${fs.statSync(statePath).size} bytes.`);
+            } else {
+                throw new Error('[LOGIN LOG] state.json creation failed physically.');
+            }
+
             await browser.close();
-            console.log('[LOGIN SCRIPT] Browser closed. Job done.\n');
+            console.log('[LOGIN LOG] Isolated Login Browser closed safely.\n');
           });
           EOF
 
-          echo "Initiating execution of bol-login.spec.js..."
-          xvfb-run npx playwright test bol-login.spec.js
+          # Added DEBUG=pw:api to make standard Playwright output ultra verbose
+          DEBUG=pw:api xvfb-run npx playwright test bol-login.spec.js
 
       # ========================================================================
       # STEP 2: CREATE & RUN THE CART JS SCRIPT
@@ -211,6 +234,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "================================================================="
+          echo " STEP 2: RESTORING STATE AND EXECUTING ORDER"
+          echo "================================================================="
 
           cat > bol-cart.spec.js <<'EOF'
           const { test, expect } = require('@playwright/test');
@@ -221,27 +247,29 @@ jobs:
           
           chromium.use(StealthPlugin());
 
-          test('Restore session from state.json and add to cart', async () => {
-            console.log('\n[CART SCRIPT] --- STARTING ---');
+          test('Restore context and operate in active session', async () => {
+            console.log('\n[CART LOG] Cart script started.');
             
             const statePath = path.join(process.cwd(), 'state.json');
+            console.log(`[CART LOG] Looking for state at project root: ${statePath}`);
+            
             if (!fs.existsSync(statePath)) {
-              console.log(`[FATAL ERROR] State file missing at: ${statePath}`);
-              throw new Error('Pre-existing state.json is required for this operation.');
+              console.log(`[FATAL ERROR] Expected storage file missing at: ${statePath}`);
+              throw new Error('[CART LOG] Handshake broken: state.json was not generated by Step 1.');
             }
-            console.log(`[CART SCRIPT] Detected state file at: ${statePath}`);
+            console.log(`[CART LOG] state.json found! Loading state content...`);
 
             const browser = await chromium.launch({
               headless: false,
               args: ['--disable-blink-features=AutomationControlled']
             });
+            console.log('[CART LOG] Cart browser instance spawned.');
             
-            console.log('[CART SCRIPT] Restoring browser context with saved credentials...');
+            console.log('[CART LOG] RESTORING STATE: Injecting the cookie dictionary...');
             const context = await browser.newContext({
-              storageState: statePath,
+              storageState: statePath, // <-- THIS IS THE BRIDGE
               locale: 'nl-NL',
               timezoneId: 'Europe/Amsterdam',
-              extraHTTPHeaders: { 'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8' },
               proxy: {
                 server: process.env.PROXY_SERVER,
                 username: process.env.PROXY_USERNAME,
@@ -250,38 +278,42 @@ jobs:
             });
 
             const page = await context.newPage();
-            page.setDefaultTimeout(15000);
+            page.setDefaultTimeout(20000);
 
-            console.log('[CART SCRIPT] Navigating directly to target product...');
+            console.log('[CART LOG] Navigating directly to product page bypass...');
             await page.goto('https://www.bol.com/nl/nl/p/apple-airtag-4-stuks/9300000035840899/', { waitUntil: 'domcontentloaded' });
+            console.log(`[CART LOG] Landed on: ${page.url()}`);
             
-            console.log('[CART SCRIPT] Locating cart button...');
+            console.log('[CART LOG] Looking for "In winkelwagen" trigger button...');
             const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
-            await expect(buyButton).toBeVisible({ timeout: 10000 });
+            await expect(buyButton).toBeVisible({ timeout: 15000 });
             
-            console.log('[CART SCRIPT] Clicking "In winkelwagen"...');
+            console.log('[CART LOG] Button is visible. Forcing click operation...');
             await buyButton.click();
             
-            await page.waitForTimeout(3000); // Allow animation to settle
+            console.log('[CART LOG] Sleeping for 4000ms to allow basket payload scripts to register...');
+            await page.waitForTimeout(4000); 
             
-            console.log('[CART SCRIPT] Loading visual cart summary for session proof...');
+            console.log('[CART LOG] Shifting directly to cart review page to double check state...');
             await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
-            await page.waitForTimeout(2000);
+            console.log(`[CART LOG] Final verification URL: ${page.url()}`);
 
-            console.log('[CART SCRIPT] Cart processing finalized successfully! Closing browser.');
+            console.log('[CART LOG] Cart operation completed. Shutting down browser.');
             await browser.close();
-            console.log('[CART SCRIPT] Browser closed. Job done.\n');
+            console.log('[CART LOG] Session successfully transferred and executed.\n');
           });
           EOF
 
-          echo "Initiating execution of bol-cart.spec.js..."
-          xvfb-run npx playwright test bol-cart.spec.js
+          # Added DEBUG=pw:api to produce massive API call tracing
+          DEBUG=pw:api xvfb-run npx playwright test bol-cart.spec.js
 
       - name: "[Cleanup] Update master YAML file with login timestamp"
         shell: bash
         run: |
           set -euo pipefail
-          echo "Modifying data/registered-emails.yml to lock the account..."
+          echo "================================================================="
+          echo " STEP 3: WRAPPING UP AND CLEANING SESSIONS"
+          echo "================================================================="
           python <<'PY'
           import yaml
           import os
@@ -306,9 +338,9 @@ jobs:
           if updated:
               with open(path, "w", encoding="utf-8") as f:
                   yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-              print(f"[SUCCESS] Flagged {email} as used.")
+              print(f"[SUCCESS] Flagged {email} as used in local database.")
           else:
-              print("[WARNING] Could not locate the manipulated account in the dataset.")
+              print("[WARNING] Could not locate the manipulated account in dataset.")
           PY
 
       - name: "[Cleanup] Commit and push changes back to repository"
