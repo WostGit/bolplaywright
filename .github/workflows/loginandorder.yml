@@ -121,7 +121,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      # Check cache hit correctly and install accordingly
+      # Accurate cache check handling
       - name: "[System] Install Playwright Chromium with proper deps"
         shell: bash
         run: |
@@ -236,11 +236,8 @@ jobs:
 
                 console.log('[FLOW LOG] Monitoring for redirection or CAPTCHA...');
                 
-                // Let's accurately track if we are verified logged in
                 await Promise.race([
-                  // 1. We look for text that only exists once logged in on the homepage
-                  page.waitForSelector('text=Account|Mijn bestellingen|Uitloggen', { timeout: 35000 }),
-                  // 2. Or we detect the bot blocker
+                  page.waitForSelector('text=/Welkom|bestelling|Hallo/i', { timeout: 35000 }),
                   page.waitForSelector('text=Ik ben geen robot', { timeout: 35000 }).then(() => {
                      throw new Error('RETRY_FLOW');
                   })
