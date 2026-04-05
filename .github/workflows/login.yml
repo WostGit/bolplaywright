@@ -170,7 +170,7 @@ jobs:
           const path = require('path');
 
           test('login only and verify success', async ({ page }, testInfo) => {
-            const screenshotDir = path.join(testInfo.outputDir, 'login-screenshots');
+            const screenshotDir = path.join(process.cwd(), 'login-screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
             let step = 1;
 
@@ -210,6 +210,7 @@ jobs:
                 console.log('Cookie banner detected. Clicking accept...');
                 await cookieBtn.click();
                 await page.waitForTimeout(1000);
+                await snap('clicked-cookie-banner');
               }
             } catch (err) {
               console.log(`Cookie handling skipped: ${err.message}`);
@@ -257,6 +258,7 @@ jobs:
             const loginBtn = page.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen")').first();
             await loginBtn.hover();
             await page.waitForTimeout(500);
+            await snap('ready-to-click-login');
             
             console.log('Clicking the login button...');
             await loginBtn.click();
@@ -281,8 +283,32 @@ jobs:
 
       - name: Run Playwright test
         shell: bash
-        # xvfb-run forces linux to provide a virtual display for headed chrome
         run: xvfb-run npx playwright test
+
+      - name: Upload Screenshots to Telegram
+        if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          # Check if there are any screenshots to upload
+          if [ ! -d "login-screenshots" ] || [ -z "$(ls -A login-screenshots/*.png 2>/dev/null)" ]; then
+            echo "No screenshots found to upload."
+            exit 0
+          fi
+          
+          echo "Found screenshots. Sending to Telegram..."
+          
+          # We send images one by one or in small bursts to respect Telegram's API
+          for img in login-screenshots/*.png; do
+            filename=$(basename "$img")
+            echo "Uploading $filename..."
+            curl -s -F chat_id="${TELEGRAM_CHAT_ID}" \
+                 -F photo="@$img" \
+                 -F caption="Step: $filename" \
+                 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" > /dev/null
+            sleep 1 # Avoid rate-limiting
+          done
 
       - name: Update YAML file on successful login
         if: success()
@@ -292,7 +318,7 @@ jobs:
           python <<'PY'
           import yaml
           import os
-          from datetime import datetime
+          from datetime import datetime, timezone
 
           path = "data/registered-emails.yml"
           email = os.environ.get("BOL_EMAIL")
@@ -305,7 +331,7 @@ jobs:
               data = yaml.safe_load(f) or []
 
           updated = False
-          now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+          now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
           
           for entry in data:
               if entry.get("email") == email:
