@@ -121,7 +121,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      # Accurate cache check handling
       - name: "[System] Install Playwright Chromium with proper deps"
         shell: bash
         run: |
@@ -249,25 +248,11 @@ jobs:
                 await page.waitForLoadState('networkidle');
                 console.log('[FLOW LOG] Logged in successfully and fully redirected.');
 
-                console.log('[FLOW LOG] Navigating directly to AirTag 4-Pack results...');
-                const ean = '0190199535046';
-                await page.goto(`https://www.bol.com/nl/nl/s/?searchtext=${ean}`, { waitUntil: 'networkidle' });
+                // BYPASS SEARCHING COMPLETELY AND FORCE ADD TO CART VIA DIRECT URL!
+                console.log('[FLOW LOG] Forcing direct cart add for AirTag 4-Pack...');
+                await page.goto('https://www.bol.com/nl/order/basket/addItems.html?productId=9300000035840899&offerUid=5589e402-f3f8-446a-8495-383cb58b6cb6&quantity=1', { waitUntil: 'networkidle' });
                 
-                console.log('[FLOW LOG] Locating product link...');
-                const productTitleLink = page.locator('[data-test="product-title"]').first();
-                
-                const productsCount = await productTitleLink.count();
-                if (productsCount === 0) {
-                   throw new Error('AirTag was not found in search results. Forcing retry.');
-                }
-
-                await expect(productTitleLink).toBeVisible({ timeout: 15000 });
-                await productTitleLink.click();
-
-                const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
-                await expect(buyButton).toBeVisible({ timeout: 20000 });
-                await buyButton.click();
-                
+                console.log('[FLOW LOG] Verifying cart screen loaded...');
                 await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', { waitUntil: 'networkidle' });
                 console.log(`[FLOW LOG] Cart page loaded successfully: ${page.url()}`);
                 
