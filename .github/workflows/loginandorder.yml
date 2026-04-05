@@ -178,7 +178,6 @@ jobs:
               console.log('[FLOW LOG] Navigating to Bol.com homepage...');
               await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
               
-              // REVISED: Safer, non-rushed cookie check
               console.log('[FLOW LOG] Checking for cookie wall...');
               const cookieBtn = page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).first();
               try {
@@ -190,14 +189,12 @@ jobs:
               }
 
               console.log('[FLOW LOG] Clicking Inloggen element...');
-              // REVISED: Using more resilient accessibility locators
               await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
               
               console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
               await page.waitForURL('**/wsp/login**', { timeout: 20000 });
               
               console.log('[FLOW LOG] Injecting user credentials...');
-              // REVISED: Using accessible labeling over raw IDs where possible
               await page.getByLabel(/E-mailadres|Username/i).or(page.locator('input#username')).fill(email);
               await page.getByLabel(/Wachtwoord|Password/i).or(page.locator('input#password')).fill(password);
               
@@ -219,7 +216,6 @@ jobs:
             // --- STAGE 3: SEARCH ---
             console.log('[FLOW LOG] Finding search bar...');
             try {
-              // REVISED: Target by standard search behavior
               const searchBar = page.getByRole('searchbox').or(page.getByPlaceholder(/Zoeken naar/i)).first();
               await expect(searchBar).toBeVisible({ timeout: 15000 });
               
@@ -236,7 +232,6 @@ jobs:
             // --- STAGE 4: ADD TO CART ---
             console.log('[FLOW LOG] Locating product link...');
             try {
-              // REVISED: Bol utilizes data-test properties frequently. This is much more solid.
               const productTitleLink = page.locator('[data-test="product-title"]').first();
               await expect(productTitleLink).toBeVisible({ timeout: 15000 });
               await productTitleLink.click();
@@ -249,18 +244,16 @@ jobs:
               const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
               await expect(buyButton).toBeVisible({ timeout: 20000 });
               
-              // REVISED: Mimic a human mouse move slightly before clicking to duck basic bot detectors
               await buyButton.hover();
               console.log('[FLOW LOG] Clicking Buy Button...');
               await buyButton.click();
               
-              // REVISED: Instead of waiting an arbitrary 4 seconds, we look for visual cart feedback
               console.log('[FLOW LOG] Waiting for cart confirmation or count change...');
               const cartCount = page.locator('[data-test="cart-count"]');
               try {
                 await expect(cartCount).not.toHaveText('0', { timeout: 8000 });
               } catch (e) {
-                console.log('[FLOW LOG] Cart count didn't flip immediately, proceeding anyway.');
+                console.log("[FLOW LOG] Cart count didn't flip immediately, proceeding anyway.");
               }
 
               console.log('[FLOW LOG] Verifying cart state...');
