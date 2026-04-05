@@ -11,6 +11,7 @@ on:
     
 permissions:
   contents: write
+  actions: write # ADDED: Required to allow this workflow to trigger order.yml
 
 jobs:
   playwright-login:
@@ -38,7 +39,6 @@ jobs:
           test -n "$PROXY_PASSWORD" || { echo "Missing secret PROXY_PASSWORD"; exit 1; }
           test -n "$BOL_PASSWORD" || { echo "Missing secret BOL_PASSWORD"; exit 1; }
 
-      # FIXED: Removed cache: 'npm' to stop the lockfile missing error
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -110,7 +110,6 @@ jobs:
         shell: bash
         run: npm install
 
-      # We keep the custom browser cache because it falls back gracefully if it finds nothing
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@v4
@@ -389,6 +388,19 @@ jobs:
           name: playwright-state
           path: state.json
           retention-days: 1
+
+      - name: Trigger Order/Cart Workflow
+        if: steps.playwright.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'order.yml', // <-- DOUBLE CHECK: make sure your targeted workflow file is actually named 'order.yml'
+              ref: 'main' // or 'master'
+            });
 
       - name: Upload Playwright report
         if: always()
