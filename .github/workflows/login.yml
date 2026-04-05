@@ -168,6 +168,7 @@ jobs:
             async function snap(name) {
               const file = path.join(screenshotDir, `${String(step).padStart(2, '0')}-${name}.png`);
               await page.screenshot({ path: file, fullPage: true });
+              console.log(`[STEP ${step}] Screenshot saved: ${file}`);
               step += 1;
               return file;
             }
@@ -175,44 +176,83 @@ jobs:
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
 
+            console.log('--- LOGIN TEST START ---');
+            console.log(`Target Email: ${email}`);
+
             if (!email || !password) {
               throw new Error("Missing BOL_EMAIL or BOL_PASSWORD environment variables.");
             }
 
-            // Go to bol.com login page
+            // 1. Navigation
+            console.log('Navigating to bol.com login page...');
             await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await page.waitForTimeout(1000);
-            await snap('01-opened-login-page');
+            await page.waitForTimeout(2000); 
+            await snap('opened-login-page');
 
-            // Accept cookies if present
+            // 2. Cookie handling
+            console.log('Checking for cookie consent buttons...');
             const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
             try {
-              if (await cookieBtn.isVisible({ timeout: 2000 })) {
+              if (await cookieBtn.isVisible({ timeout: 3000 })) {
+                console.log('Cookie banner detected. Clicking accept...');
                 await cookieBtn.click();
-                await page.waitForTimeout(500);
+                await page.waitForTimeout(1000);
+              } else {
+                console.log('No cookie banner visible within timeout.');
               }
-            } catch {}
-            await snap('02-after-cookies');
+            } catch (err) {
+              console.log(`Cookie handling skipped or errored: ${err.message}`);
+            }
+            await snap('after-cookies');
 
-            // Fill login credentials
-            await page.fill('[name="email"]', email);
-            await page.fill('[name="password"]', password);
-            await snap('03-credentials-filled');
-
-            // Click login button
-            const loginBtn = page.locator('button[type="submit"], button:has-text("Inloggen")').first();
-            await loginBtn.click();
-            await page.waitForTimeout(5000);
-
-            // Verify login success (modify selector based on actual logged-in state landing page)
-            await snap('04-after-login-attempt');
+            // 3. Form Interaction (Using targeted IDs/names from your HTML trace)
+            console.log('Looking for email and password fields...');
             
-            // Basic fail-safe to see if it errored out on bad password or captcha
-            const errorElement = page.locator('[class*="error"], [id*="error"]').first();
+            const emailInput = page.locator('input#username, input[name="j_username"]').first();
+            const passwordInput = page.locator('input#password, input[name="j_password"]').first();
+
+            console.log('Waiting for email input to be visible...');
+            await expect(emailInput).toBeVisible({ timeout: 15000 });
+            
+            console.log('Filling credentials...');
+            await emailInput.fill(email);
+            await passwordInput.fill(password);
+            console.log('Credentials filled successfully.');
+            await snap('credentials-filled');
+
+            // 4. Click login
+            console.log('Looking for the submit button...');
+            const loginBtn = page.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen")').first();
+            
+            console.log('Clicking the login button...');
+            await loginBtn.click();
+            
+            console.log('Waiting 6 seconds for navigation or errors to appear...');
+            await page.waitForTimeout(6000);
+            await snap('after-login-attempt');
+
+            // 5. Verify outcomes
+            console.log('Analyzing result page...');
+            
+            // Check for immediate inline errors on the page
+            const errorElement = page.locator('[aria-live="assertive"], [class*="error"]').first();
             if (await errorElement.isVisible({ timeout: 1000 })) {
                 const errorText = await errorElement.innerText();
+                console.log(`❌ FAILED: Found error text on page: "${errorText}"`);
                 throw new Error(`Login failed with error on page: ${errorText}`);
             }
+
+            // Fallback check: Are we still on the login URL?
+            const currentUrl = page.url();
+            console.log(`Current URL after login attempt: ${currentUrl}`);
+            
+            if (currentUrl.includes('/wsp/login')) {
+                console.log('❌ FAILED: Browser is still on the login page. Authentication likely failed.');
+                throw new Error('Login failed: Still on the login page.');
+            }
+
+            console.log('🎉 SUCCESS: Navigated away from login page. Assuming success!');
+            console.log('--- LOGIN TEST END ---');
           });
           EOF
 
