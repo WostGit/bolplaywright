@@ -147,73 +147,108 @@ jobs:
             const page = await context.newPage();
             page.setDefaultTimeout(30000);
 
-            // --- STAGE 1: LOG IN ---
-            console.log('[FLOW LOG] Navigating to Bol.com homepage...');
-            await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
-            
-            const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
-            if (await cookieBtn.isVisible()) {
-              await cookieBtn.click();
-            }
-
-            console.log('[FLOW LOG] Clicking Inloggen element...');
-            await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click({ force: true });
-            
-            console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
-            await page.waitForURL('**/wsp/login**', { timeout: 20000 });
-            
-            console.log('[FLOW LOG] Injecting user credentials...');
-            await page.locator('input#username').fill(email);
-            await page.locator('input#password').fill(password);
-            
-            console.log('[FLOW LOG] Clicking sign in submit button...');
-            await page.locator('button#submit').click();
-            
-            console.log('[FLOW LOG] Waiting for return redirection to main domain...');
-            try {
-              // Exact timeout hook you hit in the logs
-              await page.waitForURL(/https:\/\/www\.bol\.com\/nl\/nl\/.*/, { timeout: 35000 });
-              console.log('[FLOW LOG] User session successfully established!');
-            } catch (err) {
-              console.error(`\n[CRITICAL ERROR] Execution timed out waiting for redirect!`);
-              console.error(`[DEBUG INFO] Current URL halted on: ${page.url()}`);
-              console.error(`[DEBUG INFO] Starting full DOM dump...\n`);
+            // HELPER: Full DOM Dump Function
+            async function dumpDomAndDie(stageName, error) {
+              console.error(`\n===========================================================`);
+              console.error(`[CRITICAL FAILURE] Stage: ${stageName}`);
+              console.error(`[CRITICAL FAILURE] Error Message: ${error.message}`);
+              console.error(`[CRITICAL FAILURE] URL at crash: ${page.url()}`);
+              console.error(`===========================================================`);
               
               try {
+                console.error(`[DEBUG] Attempting full DOM extract...`);
                 const rawDom = await page.evaluate(() => document.documentElement.outerHTML);
-                
-                // Sanitize your password out of the DOM if it's still mapped to a value property
                 const sanitizedDom = rawDom.replace(new RegExp(password, 'g'), '***REDACTED_PASSWORD***');
                 
                 console.error(`=================== FULL DOM DUMP START ===================`);
                 console.error(sanitizedDom);
                 console.error(`==================== FULL DOM DUMP END ====================`);
               } catch (domErr) {
-                console.error(`[CRITICAL ERROR] Failed to evaluate page DOM: ${domErr.message}`);
+                console.error(`[CRITICAL ERROR] Failed to pull DOM from browser: ${domErr.message}`);
               }
-              
-              throw err;
+              throw error;
             }
 
-            // --- STAGE 2: SEARCH ---
+            // --- STAGE 1: LOG IN ---
+            try {
+              console.log('[FLOW LOG] Navigating to Bol.com homepage...');
+              await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
+              
+              const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
+              if (await cookieBtn.isVisible()) {
+                console.log('[FLOW LOG] Cookie wall detected, clicking accept.');
+                await cookieBtn.click();
+              }
+
+              console.log('[FLOW LOG] Clicking Inloggen element...');
+              await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click({ force: true });
+              
+              console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
+              await page.waitForURL('**/wsp/login**', { timeout: 20000 });
+              
+              console.log('[FLOW LOG] Injecting user credentials...');
+              await page.locator('input#username').fill(email);
+              await page.locator('input#password').fill(password);
+              
+              console.log('[FLOW LOG] Clicking sign in submit button...');
+              await page.locator('button#submit').click();
+            } catch (err) {
+              await dumpDomAndDie('Initial Login Setup', err);
+            }
+            
+            // --- STAGE 2: STRICT REDIRECTION CHECK ---
+            console.log('[FLOW LOG] Waiting for return redirection back to Bol.com...');
+            try {
+              // This strictly blocks the code from executing the next stages until we land safely
+              await page.waitForURL(/https:\/\/www\.bol\.com\/nl\/nl\/.*/, { timeout: 40000 });
+              console.log('[FLOW LOG] Successfully redirected. Login confirmed!');
+            } catch (err) {
+              await dumpDomAndDie('Post-Login Redirect Wait', err);
+            }
+
+            // --- STAGE 3: SEARCH ---
             console.log('[FLOW LOG] Finding search bar...');
             const searchBar = page.locator('input#search-key, input[type="search"]').first();
-            await expect(searchBar).toBeVisible({ timeout: 15000 });
-            await searchBar.fill('9300000035840899'); 
-            await page.keyboard.press('Enter');
-            await page.waitForURL('**/s/?searchtext=**', { timeout: 20000 });
+            try {
+              await expect(searchBar).toBeVisible({ timeout: 15000 });
+              console.log('[FLOW LOG] Typing EAN into search...');
+              await searchBar.fill('9300000035840899'); 
+              await page.keyboard.press('Enter');
+              
+              console.log('[FLOW LOG] Waiting for search results page to load...');
+              await page.waitForURL('**/s/?searchtext=**', { timeout: 20000 });
+            } catch (err) {
+              await dumpDomAndDie('Product Search Execution', err);
+            }
             
-            // --- STAGE 3: ADD TO CART ---
-            await page.locator('a.product-title').first().click();
-            const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
-            await expect(buyButton).toBeVisible({ timeout: 20000 });
-            await buyButton.click();
-            await page.waitForTimeout(4000); 
-            await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
-            console.log(`[FLOW LOG] Landed on cart check: ${page.url()}`);
+            // --- STAGE 4: ADD TO CART ---
+            console.log('[FLOW LOG] Locating product link...');
+            const productTitleLink = page.locator('a.product-title').first();
+            try {
+              await expect(productTitleLink).toBeVisible({ timeout: 15000 });
+              await productTitleLink.click();
+            } catch (err) {
+              await dumpDomAndDie('Clicking Search Result', err);
+            }
 
+            console.log('[FLOW LOG] Awaiting "In winkelwagen" buy button visibility...');
+            const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
+            try {
+              await expect(buyButton).toBeVisible({ timeout: 20000 });
+              console.log('[FLOW LOG] Clicking Buy Button...');
+              await buyButton.click();
+              
+              await page.waitForTimeout(4000); 
+              
+              console.log('[FLOW LOG] Verifying cart state...');
+              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
+              console.log(`[FLOW LOG] Cart page loaded: ${page.url()}`);
+            } catch (err) {
+              await dumpDomAndDie('Adding to Cart Operations', err);
+            }
+
+            console.log('[FLOW LOG] Execution sequence finished successfully.');
             await browser.close();
-            console.log('[FLOW LOG] Done.\n');
           });
           EOF
 
