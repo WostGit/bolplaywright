@@ -26,6 +26,21 @@ jobs:
         with:
           node-version: 20
 
+      # --- NEW STEP TO FIX ENOENT ---
+      - name: Create package.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > package.json <<'EOF'
+          {
+            "name": "playwright-bol-ordering",
+            "private": true,
+            "devDependencies": {
+              "@playwright/test": "^1.54.0"
+            }
+          }
+          EOF
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -95,7 +110,7 @@ jobs:
                 const file = path.join(screenshotDir, filename);
                 try {
                   await page.screenshot({ path: file, fullPage: true, timeout: 5000 });
-                  console.log(`[STEP ${this.step}] Screenshot saved: ${file}`);
+                  console.log(`[STEP ${step}] Screenshot saved: ${file}`);
                   step += 1;
 
                   if (botToken && chatId) {
@@ -140,11 +155,6 @@ jobs:
                 console.log('Session verified successfully.');
 
                 // --- ADD YOUR SPECIFIC PRODUCT ORDERING STEPS HERE ---
-                // Example:
-                // console.log('Searching for item...');
-                // await page.goto('https://www.bol.com/nl/nl/p/example-product-id');
-                // await snap('product-page');
-                // ... fill fields ...
                 
                 console.log('🎉 SUCCESS: Completed Ordering Sequence.');
                 success = true;
