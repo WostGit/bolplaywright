@@ -1,4 +1,4 @@
-name: Playwright Bol Register + Login + Computer Search
+name: Playwright Bol Register + Login + Target Search
 
 on:
   workflow_dispatch:
@@ -89,6 +89,7 @@ jobs:
             -A "playwright-bol-register/1.0" \
             "$DATASET_URL" \
             -o "$DATASET_FILE"
+          ls -lh "$DATASET_FILE"
 
       - name: Check proxy connectivity
         shell: bash
@@ -109,7 +110,6 @@ jobs:
           cat > random_nl_house.py <<'PY'
           import csv
           import io
-          import json
           import os
           import random
           import re
@@ -277,8 +277,8 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('register, login, and open target search page', async ({ page }) => {
-            const screenshotDir = path.join(process.cwd(), 'telegram-shots');
+          test('register, login, and open target search page', async ({ page }, testInfo) => {
+            const screenshotDir = path.join(testInfo.outputDir, 'step-screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
 
             let step = 1;
@@ -443,7 +443,7 @@ jobs:
               return /recaptcha|captcha/i.test(html);
             }
 
-            async function loginWithCorrectSelectors() {
+            async function loginFlow() {
               await gotoWithRetry(formData.loginUrl, 3);
               await waitForStable();
               await acceptCookiesIfPresent();
@@ -467,7 +467,7 @@ jobs:
               await page.waitForTimeout(500);
               await submitButton.click();
               await page.waitForTimeout(4000);
-              await snap('after-login');
+              await snap('after-login-submit');
             }
 
             await gotoWithRetry('https://login.bol.com/wsp/register', 3);
@@ -530,7 +530,7 @@ jobs:
 
             await snap('after-registration');
 
-            await loginWithCorrectSelectors();
+            await loginFlow();
 
             await gotoWithRetry(formData.searchUrl, 3);
             await waitForStable();
@@ -596,7 +596,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FILE=$(find telegram-shots -type f -name '*before-registration*.png' | head -n 1 || true)
+          FILE=$(find test-results -type f -name '*before-registration*.png' | head -n 1 || true)
           if [ -n "${FILE:-}" ]; then
             curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" \
               -F chat_id="${TELEGRAM_CHAT_ID}" \
@@ -609,7 +609,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FILE=$(find telegram-shots -type f -name '*after-registration*.png' | head -n 1 || true)
+          FILE=$(find test-results -type f -name '*after-registration*.png' | head -n 1 || true)
           if [ -n "${FILE:-}" ]; then
             curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" \
               -F chat_id="${TELEGRAM_CHAT_ID}" \
@@ -625,15 +625,6 @@ jobs:
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="bol workflow failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-      - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: telegram-shots
-          path: telegram-shots/
-          if-no-files-found: warn
-          retention-days: 14
 
       - name: Upload registered emails file
         if: always()
