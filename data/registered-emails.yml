@@ -121,9 +121,9 @@
   run_id: '24002969975'
   repository: WostGit/bolplaywright
   workflow: Playwright Bol Registration Only
-  used_to_login: false
+  used_to_login: true
   created_at: 2026-04-05 13:56:45 UTC
-  last_login_at: null
+  last_login_at: 2026-04-05 14:59:46 UTC
 - email: bramscholten@qrlfoundation.org
   run_id: '24003054393'
   repository: WostGit/bolplaywright
