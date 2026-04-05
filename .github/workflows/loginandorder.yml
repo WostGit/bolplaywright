@@ -121,17 +121,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      # CONDITION 1: Fresh install everything if the cache misses
-      - name: "[System] Install Playwright Chromium with full deps (Cache Miss)"
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+      # Check cache hit correctly and install accordingly
+      - name: "[System] Install Playwright Chromium with proper deps"
         shell: bash
-        run: npx playwright install --with-deps chromium
-
-      # CONDITION 2: Only check and install OS libraries if cache lands successfully
-      - name: "[System] Verify Playwright OS dependencies only (Cache Hit)"
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        shell: bash
-        run: npx playwright install-deps chromium
+        run: |
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "[CACHE HIT] Skipping browser download. Verifying OS dependencies only..."
+            npx playwright install-deps chromium
+          else
+            echo "[CACHE MISS] Downloading browser and dependencies..."
+            npx playwright install --with-deps chromium
+          fi
 
       - name: "[Action] Execute Full Login and Cart Sequence"
         shell: bash
@@ -235,14 +235,18 @@ jobs:
                 await page.getByRole('button', { name: 'Inloggen' }).click();
 
                 console.log('[FLOW LOG] Monitoring for redirection or CAPTCHA...');
+                
+                // Let's accurately track if we are verified logged in
                 await Promise.race([
-                  page.waitForURL(/https:\/\/www\.bol\.com\/.*/, { timeout: 30000 }),
-                  page.waitForSelector('text=Ik ben geen robot', { timeout: 30000 }).then(() => {
+                  // 1. We look for text that only exists once logged in on the homepage
+                  page.waitForSelector('text=Account|Mijn bestellingen|Uitloggen', { timeout: 35000 }),
+                  // 2. Or we detect the bot blocker
+                  page.waitForSelector('text=Ik ben geen robot', { timeout: 35000 }).then(() => {
                      throw new Error('RETRY_FLOW');
                   })
                 ]);
                 
-                console.log('[FLOW LOG] Successfully logged in without CAPTCHA.');
+                console.log('[FLOW LOG] Logged in successfully and fully redirected.');
 
                 console.log('[FLOW LOG] Navigating directly to EAN search results...');
                 const ean = '9300000035840899';
@@ -251,7 +255,7 @@ jobs:
                 console.log('[FLOW LOG] Locating product link...');
                 const productTitleLink = page.locator('[data-test="product-title"]').first();
                 
-                await expect(productTitleLink).toBeVisible({ timeout: 8000 });
+                await expect(productTitleLink).toBeVisible({ timeout: 12000 });
                 await productTitleLink.click();
 
                 const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
