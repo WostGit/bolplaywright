@@ -35,11 +35,11 @@ jobs:
           test -n "$PROXY_PASSWORD" || { echo "Missing secret PROXY_PASSWORD"; exit 1; }
           test -n "$BOL_PASSWORD" || { echo "Missing secret BOL_PASSWORD"; exit 1; }
 
+      # FIXED: Removed cache: 'npm' to stop the lockfile missing error
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -107,6 +107,7 @@ jobs:
         shell: bash
         run: npm install
 
+      # We keep the custom browser cache because it falls back gracefully if it finds nothing
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@v4
@@ -266,7 +267,6 @@ jobs:
                 const emailInput = page.locator('input#username, input[name="j_username"]').first();
                 await emailInput.waitFor({ state: 'visible', timeout: 5000 });
                 
-                // FIXED: Using fill directly to avoid pointer pointer overlap errors
                 console.log('Filling email...');
                 await emailInput.fill(email);
 
