@@ -17,9 +17,8 @@ jobs:
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
-      # Optional for notifications
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Massive trace flags across the whole job
+      DEBUG: "pw:api,pw:browser,pw:protocol"
 
     steps:
       - name: "[System] Checkout Repository"
@@ -89,14 +88,13 @@ jobs:
           echo " STEP 0.5: WRITING PROJECT CONFIGS"
           echo "================================================================="
           
+          # Notice we removed the extra stealth packages entirely to stop the line 65 crash
           cat > package.json <<'EOF'
           {
             "name": "bol-flow",
             "private": true,
             "devDependencies": {
-              "@playwright/test": "^1.54.0",
-              "playwright-extra": "^4.3.6",
-              "puppeteer-extra-plugin-stealth": "^2.11.2"
+              "@playwright/test": "^1.54.0"
             }
           }
           EOF
@@ -118,15 +116,11 @@ jobs:
 
       - name: "[System] Install Node Dependencies"
         shell: bash
-        run: |
-          echo "Running npm install..."
-          npm install
+        run: npm install
 
       - name: "[System] Install Playwright Chromium with deps"
         shell: bash
-        run: |
-          echo "Downloading Chromium and system dependencies..."
-          npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium
 
       # ========================================================================
       # STEP 1: CREATE & RUN THE LOGIN JS SCRIPT
@@ -140,13 +134,9 @@ jobs:
           echo "================================================================="
           
           cat > bol-login.spec.js <<'EOF'
-          const { test, expect } = require('@playwright/test');
-          const { chromium } = require('playwright-extra');
-          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+          const { test, expect, chromium } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
-          
-          chromium.use(StealthPlugin());
 
           test('Login flow and extract cookies', async () => {
             console.log('\n[LOGIN LOG] Script started.');
@@ -154,78 +144,76 @@ jobs:
             const password = process.env.BOL_PASSWORD;
             
             console.log(`[LOGIN LOG] Target account set to: ${email}`);
-            console.log(`[LOGIN LOG] Proxy server set to: ${process.env.PROXY_SERVER}`);
 
             const browser = await chromium.launch({
               headless: false,
-              args: ['--disable-blink-features=AutomationControlled']
+              args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars'
+              ]
             });
             console.log('[LOGIN LOG] Browser instance launched successfully.');
             
             const context = await browser.newContext({
               locale: 'nl-NL',
               timezoneId: 'Europe/Amsterdam',
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
               proxy: {
                 server: process.env.PROXY_SERVER,
                 username: process.env.PROXY_USERNAME,
                 password: process.env.PROXY_PASSWORD
               }
             });
-            console.log('[LOGIN LOG] Browser context instantiated with localized variables and proxy.');
+            console.log('[LOGIN LOG] Context instantiated with static UserAgent and proxy.');
 
             const page = await context.newPage();
-            page.setDefaultTimeout(20000);
+            page.setDefaultTimeout(30000);
 
-            console.log('[LOGIN LOG] Navigating to Bol.com main domain...');
-            await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
-            console.log(`[LOGIN LOG] Landed on initial URL: ${page.url()}`);
+            console.log('[LOGIN LOG] Triggering page.goto to Bol.com homepage...');
+            const response = await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
+            console.log(`[LOGIN LOG] Navigation settled. HTTP Status: ${response.status()}`);
             
-            console.log('[LOGIN LOG] Checking for cookie wall...');
+            console.log('[LOGIN LOG] Intercepting the cookie wall...');
             const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
             if (await cookieBtn.isVisible()) {
-              console.log('[LOGIN LOG] Cookie wall found! Clicking accept button.');
+              console.log('[LOGIN LOG] Found cookie wall. Tapping accept.');
               await cookieBtn.click();
-            } else {
-              console.log('[LOGIN LOG] No cookie wall active or visible. Proceeding.');
             }
 
-            console.log('[LOGIN LOG] Locating storefront login button...');
+            console.log('[LOGIN LOG] Shifting focus to Inloggen element...');
             await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click();
             
-            console.log('[LOGIN LOG] Waiting for WSP Login Redirection...');
-            await page.waitForURL('**/wsp/login**');
-            console.log(`[LOGIN LOG] Successfully routed to login secure hub: ${page.url()}`);
+            console.log('[LOGIN LOG] Waiting for WSP Login gateway to mount...');
+            await page.waitForURL('**/wsp/login**', { timeout: 20000 });
+            console.log(`[LOGIN LOG] Routed to: ${page.url()}`);
             
-            console.log('[LOGIN LOG] Injecting username/password strings...');
+            console.log('[LOGIN LOG] Injecting strings into the DOM form inputs...');
             await page.locator('input#username').fill(email);
             await page.locator('input#password').fill(password);
             
-            console.log('[LOGIN LOG] Clicking submit...');
+            console.log('[LOGIN LOG] Clicking proceed submit button...');
             await page.locator('button#submit').click();
             
-            console.log('[LOGIN LOG] Waiting for post-login return to homepage...');
-            await page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 25000 });
-            
-            console.log(`[LOGIN LOG] Secure handshake complete! Final destination: ${page.url()}`);
+            console.log('[LOGIN LOG] Waiting for return to root landing domain (logged in state)...');
+            await page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 35000 });
             
             const statePath = path.join(process.cwd(), 'state.json');
-            console.log(`[LOGIN LOG] Dumping session cookies and site local storage to: ${statePath}`);
+            console.log(`[LOGIN LOG] Extracting session tree map to: ${statePath}`);
             await context.storageState({ path: statePath });
 
-            console.log('[LOGIN LOG] Verifying state.json was physically created...');
+            console.log('[LOGIN LOG] Verifying state.json existence on disk...');
             if (fs.existsSync(statePath)) {
-                console.log(`[LOGIN LOG] Verified! File size: ${fs.statSync(statePath).size} bytes.`);
+                console.log(`[LOGIN LOG] Extraction confirmed. File size mapping: ${fs.statSync(statePath).size} bytes.`);
             } else {
-                throw new Error('[LOGIN LOG] state.json creation failed physically.');
+                throw new Error('[LOGIN LOG] state.json extraction failed to touch disk.');
             }
 
             await browser.close();
-            console.log('[LOGIN LOG] Isolated Login Browser closed safely.\n');
+            console.log('[LOGIN LOG] Browser torn down safely.\n');
           });
           EOF
 
-          # Added DEBUG=pw:api to make standard Playwright output ultra verbose
-          DEBUG=pw:api xvfb-run npx playwright test bol-login.spec.js
+          xvfb-run npx playwright test bol-login.spec.js
 
       # ========================================================================
       # STEP 2: CREATE & RUN THE CART JS SCRIPT
@@ -239,37 +227,34 @@ jobs:
           echo "================================================================="
 
           cat > bol-cart.spec.js <<'EOF'
-          const { test, expect } = require('@playwright/test');
-          const { chromium } = require('playwright-extra');
-          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+          const { test, expect, chromium } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
-          
-          chromium.use(StealthPlugin());
 
           test('Restore context and operate in active session', async () => {
-            console.log('\n[CART LOG] Cart script started.');
+            console.log('\n[CART LOG] Cart script active.');
             
             const statePath = path.join(process.cwd(), 'state.json');
-            console.log(`[CART LOG] Looking for state at project root: ${statePath}`);
-            
             if (!fs.existsSync(statePath)) {
-              console.log(`[FATAL ERROR] Expected storage file missing at: ${statePath}`);
-              throw new Error('[CART LOG] Handshake broken: state.json was not generated by Step 1.');
+              throw new Error('[CART LOG] Handshake critical break: state.json was not generated by Step 1.');
             }
-            console.log(`[CART LOG] state.json found! Loading state content...`);
+            console.log(`[CART LOG] Detected active session map at: ${statePath}`);
 
             const browser = await chromium.launch({
               headless: false,
-              args: ['--disable-blink-features=AutomationControlled']
+              args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars'
+              ]
             });
-            console.log('[CART LOG] Cart browser instance spawned.');
+            console.log('[CART LOG] Secondary browser process spawned.');
             
-            console.log('[CART LOG] RESTORING STATE: Injecting the cookie dictionary...');
+            console.log('[CART LOG] Hydrating session storageState into new context...');
             const context = await browser.newContext({
-              storageState: statePath, // <-- THIS IS THE BRIDGE
+              storageState: statePath,
               locale: 'nl-NL',
               timezoneId: 'Europe/Amsterdam',
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
               proxy: {
                 server: process.env.PROXY_SERVER,
                 username: process.env.PROXY_USERNAME,
@@ -278,34 +263,31 @@ jobs:
             });
 
             const page = await context.newPage();
-            page.setDefaultTimeout(20000);
+            page.setDefaultTimeout(30000);
 
-            console.log('[CART LOG] Navigating directly to product page bypass...');
+            console.log('[CART LOG] Traversing directly to target product grid...');
             await page.goto('https://www.bol.com/nl/nl/p/apple-airtag-4-stuks/9300000035840899/', { waitUntil: 'domcontentloaded' });
-            console.log(`[CART LOG] Landed on: ${page.url()}`);
             
-            console.log('[CART LOG] Looking for "In winkelwagen" trigger button...');
+            console.log('[CART LOG] Awaiting "In winkelwagen" button visibility state...');
             const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
-            await expect(buyButton).toBeVisible({ timeout: 15000 });
+            await expect(buyButton).toBeVisible({ timeout: 20000 });
             
-            console.log('[CART LOG] Button is visible. Forcing click operation...');
+            console.log('[CART LOG] Button identified. Dispatching click payload...');
             await buyButton.click();
             
-            console.log('[CART LOG] Sleeping for 4000ms to allow basket payload scripts to register...');
+            console.log('[CART LOG] Sleeping 4000ms for network cart scripts to settle...');
             await page.waitForTimeout(4000); 
             
-            console.log('[CART LOG] Shifting directly to cart review page to double check state...');
+            console.log('[CART LOG] Loading verify cart overview page...');
             await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
-            console.log(`[CART LOG] Final verification URL: ${page.url()}`);
+            console.log(`[CART LOG] Cart URL check: ${page.url()}`);
 
-            console.log('[CART LOG] Cart operation completed. Shutting down browser.');
             await browser.close();
-            console.log('[CART LOG] Session successfully transferred and executed.\n');
+            console.log('[CART LOG] Flow path closed smoothly.\n');
           });
           EOF
 
-          # Added DEBUG=pw:api to produce massive API call tracing
-          DEBUG=pw:api xvfb-run npx playwright test bol-cart.spec.js
+          xvfb-run npx playwright test bol-cart.spec.js
 
       - name: "[Cleanup] Update master YAML file with login timestamp"
         shell: bash
