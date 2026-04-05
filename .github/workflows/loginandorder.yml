@@ -1,4 +1,5 @@
 name: Playwright Bol Unified Flow
+
 on:
   workflow_dispatch:
   push:
@@ -11,7 +12,7 @@ jobs:
   run-full-flow:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    
+        
     env:
       BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
@@ -132,7 +133,10 @@ jobs:
             
             const browser = await chromium.launch({
               headless: false,
-              args: ['--disable-blink-features=AutomationControlled']
+              args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process'
+              ]
             });
             const context = await browser.newContext({
               locale: 'nl-NL',
@@ -174,24 +178,31 @@ jobs:
               console.log('[FLOW LOG] Navigating to Bol.com homepage...');
               await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
               
-              const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
-              if (await cookieBtn.isVisible()) {
+              // REVISED: Safer, non-rushed cookie check
+              console.log('[FLOW LOG] Checking for cookie wall...');
+              const cookieBtn = page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).first();
+              try {
+                await cookieBtn.waitFor({ state: 'visible', timeout: 5000 });
                 console.log('[FLOW LOG] Cookie wall detected, clicking accept.');
                 await cookieBtn.click();
+              } catch (e) {
+                console.log('[FLOW LOG] No cookie wall detected within 5s, proceeding.');
               }
 
               console.log('[FLOW LOG] Clicking Inloggen element...');
-              await page.locator('a:has-text("Inloggen"), [data-test="login-link"]').first().click({ force: true });
+              // REVISED: Using more resilient accessibility locators
+              await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
               
               console.log('[FLOW LOG] Waiting for WSP Login portal to mount...');
               await page.waitForURL('**/wsp/login**', { timeout: 20000 });
               
               console.log('[FLOW LOG] Injecting user credentials...');
-              await page.locator('input#username').fill(email);
-              await page.locator('input#password').fill(password);
+              // REVISED: Using accessible labeling over raw IDs where possible
+              await page.getByLabel(/E-mailadres|Username/i).or(page.locator('input#username')).fill(email);
+              await page.getByLabel(/Wachtwoord|Password/i).or(page.locator('input#password')).fill(password);
               
               console.log('[FLOW LOG] Clicking sign in submit button...');
-              await page.locator('button#submit').click();
+              await page.getByRole('button', { name: /Inloggen|Sign in|Submit/i }).or(page.locator('button#submit')).click();
             } catch (err) {
               await dumpDomAndDie('Initial Login Setup', err);
             }
@@ -199,7 +210,6 @@ jobs:
             // --- STAGE 2: STRICT REDIRECTION CHECK ---
             console.log('[FLOW LOG] Waiting for return redirection back to Bol.com...');
             try {
-              // This strictly blocks the code from executing the next stages until we land safely
               await page.waitForURL(/https:\/\/www\.bol\.com\/nl\/nl\/.*/, { timeout: 40000 });
               console.log('[FLOW LOG] Successfully redirected. Login confirmed!');
             } catch (err) {
@@ -208,9 +218,11 @@ jobs:
 
             // --- STAGE 3: SEARCH ---
             console.log('[FLOW LOG] Finding search bar...');
-            const searchBar = page.locator('input#search-key, input[type="search"]').first();
             try {
+              // REVISED: Target by standard search behavior
+              const searchBar = page.getByRole('searchbox').or(page.getByPlaceholder(/Zoeken naar/i)).first();
               await expect(searchBar).toBeVisible({ timeout: 15000 });
+              
               console.log('[FLOW LOG] Typing EAN into search...');
               await searchBar.fill('9300000035840899'); 
               await page.keyboard.press('Enter');
@@ -223,8 +235,9 @@ jobs:
             
             // --- STAGE 4: ADD TO CART ---
             console.log('[FLOW LOG] Locating product link...');
-            const productTitleLink = page.locator('a.product-title').first();
             try {
+              // REVISED: Bol utilizes data-test properties frequently. This is much more solid.
+              const productTitleLink = page.locator('[data-test="product-title"]').first();
               await expect(productTitleLink).toBeVisible({ timeout: 15000 });
               await productTitleLink.click();
             } catch (err) {
@@ -232,14 +245,24 @@ jobs:
             }
 
             console.log('[FLOW LOG] Awaiting "In winkelwagen" buy button visibility...');
-            const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
             try {
+              const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
               await expect(buyButton).toBeVisible({ timeout: 20000 });
+              
+              // REVISED: Mimic a human mouse move slightly before clicking to duck basic bot detectors
+              await buyButton.hover();
               console.log('[FLOW LOG] Clicking Buy Button...');
               await buyButton.click();
               
-              await page.waitForTimeout(4000); 
-              
+              // REVISED: Instead of waiting an arbitrary 4 seconds, we look for visual cart feedback
+              console.log('[FLOW LOG] Waiting for cart confirmation or count change...');
+              const cartCount = page.locator('[data-test="cart-count"]');
+              try {
+                await expect(cartCount).not.toHaveText('0', { timeout: 8000 });
+              } catch (e) {
+                console.log('[FLOW LOG] Cart count didn't flip immediately, proceeding anyway.');
+              }
+
               console.log('[FLOW LOG] Verifying cart state...');
               await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
               console.log(`[FLOW LOG] Cart page loaded: ${page.url()}`);
@@ -251,7 +274,7 @@ jobs:
             await browser.close();
           });
           EOF
-
+          
           xvfb-run npx playwright test bol-flow.spec.js
 
       - name: "[Cleanup] Update master YAML file with login timestamp"
