@@ -116,9 +116,9 @@ jobs:
           const { defineConfig, devices } = require('@playwright/test');
           module.exports = defineConfig({
             testDir: './tests',
-            timeout: 240000, // Extended since we are doing manual retries inside the test
+            timeout: 300000, 
             expect: { timeout: 15000 },
-            retries: 0, // Turning off Playwright's native retries to use our custom loop
+            retries: 0, 
             reporter: [['html', { open: 'never' }], ['list']],
             use: {
               headless: false, 
@@ -154,6 +154,7 @@ jobs:
           const { test, expect } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
+          const { execSync } = require('child_process');
 
           test('login only and verify success', async ({ browser }, testInfo) => {
             const screenshotDir = path.join(process.cwd(), 'login-screenshots');
@@ -162,6 +163,8 @@ jobs:
 
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
+            const botToken = process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = process.env.TELEGRAM_CHAT_ID;
 
             console.log('--- LOGIN TEST START ---');
             console.log(`Target Email: ${email}`);
@@ -170,13 +173,12 @@ jobs:
               throw new Error("Missing BOL_EMAIL or BOL_PASSWORD environment variables.");
             }
 
-            const maxAttempts = 3;
+            const maxAttempts = 5; 
             let success = false;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               console.log(`\nStarting Attempt ${attempt} of ${maxAttempts}...`);
               
-              // 1. Create a fresh context (this forces a clean connection/new IP if your proxy rotates on connect)
               const context = await browser.newContext({
                 proxy: {
                   server: process.env.PROXY_SERVER,
@@ -186,13 +188,31 @@ jobs:
               });
               
               const page = await context.newPage();
+              page.setDefaultNavigationTimeout(30000); 
 
+              // High-speed Telegram Dispatch Function
               async function snap(name) {
-                const file = path.join(screenshotDir, `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`);
-                await page.screenshot({ path: file, fullPage: true });
-                console.log(`[STEP ${step}] Screenshot saved: ${file}`);
-                step += 1;
-                return file;
+                const filename = `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`;
+                const file = path.join(screenshotDir, filename);
+                try {
+                  await page.screenshot({ path: file, fullPage: true, timeout: 5000 });
+                  console.log(`[STEP ${step}] Screenshot saved: ${file}`);
+                  step += 1;
+
+                  // Fire to Telegram immediately via curl if credentials exist
+                  if (botToken && chatId) {
+                    console.log(`Sending ${filename} to Telegram...`);
+                    try {
+                      execSync(`curl -s -F chat_id="${chatId}" -F photo="@${file}" -F caption="Step: ${filename}" "https://api.telegram.org/bot${botToken}/sendPhoto"`, { stdio: 'ignore' });
+                    } catch (telegramErr) {
+                      console.log(`Telegram dispatch failed: ${telegramErr.message}`);
+                    }
+                  }
+                  
+                  return file;
+                } catch (e) {
+                  console.log(`[STEP ${step}] Screenshot failed (Proxy probably hung): ${e.message}`);
+                }
               }
 
               try {
@@ -201,16 +221,15 @@ jobs:
                 });
 
                 console.log('Navigating to bol.com login page...');
-                await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
-                await page.waitForTimeout(3000); 
+                await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded' });
+                await page.waitForTimeout(2000); 
                 await snap('opened-login-page');
 
-                // Check for Captcha / Block
                 const bodyText = await page.innerText('body');
                 if (bodyText.includes('captcha') || bodyText.includes('robot') || bodyText.includes('unusual traffic')) {
                   console.log('⚠️ Captcha or Block detected! Recycling proxy and trying again.');
                   await context.close();
-                  continue; // Restarts loop with a fresh context
+                  continue; 
                 }
 
                 console.log('Checking for cookie consent buttons...');
@@ -219,7 +238,6 @@ jobs:
                   console.log('Cookie banner detected. Clicking accept...');
                   await cookieBtn.click();
                   await page.waitForTimeout(1000);
-                  await snap('clicked-cookie-banner');
                 }
                 await snap('after-cookies');
 
@@ -230,9 +248,8 @@ jobs:
                     if (await navLoginBtn.isVisible({ timeout: 5000 })) {
                          console.log('Found login button. Hovering and clicking...');
                          await navLoginBtn.hover();
-                         await page.waitForTimeout(500);
                          await navLoginBtn.click();
-                         await page.waitForTimeout(5000);
+                         await page.waitForURL('**/wsp/login**', { timeout: 20000 });
                          await snap('after-storefront-login-click');
                     }
                 }
@@ -243,16 +260,13 @@ jobs:
 
                 console.log('Simulating human mouse movement to email input...');
                 await emailInput.hover();
-                await page.waitForTimeout(400);
 
                 console.log('Typing email with human delays...');
                 await emailInput.click();
                 await page.keyboard.type(email, { delay: 100 }); 
-                await page.waitForTimeout(600);
 
                 const passwordInput = page.locator('input#password, input[name="j_password"]').first();
                 await passwordInput.hover();
-                await page.waitForTimeout(300);
                 
                 console.log('Typing password with human delays...');
                 await passwordInput.click();
@@ -263,13 +277,12 @@ jobs:
 
                 const loginBtn = page.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen")').first();
                 await loginBtn.hover();
-                await page.waitForTimeout(500);
                 await snap('ready-to-click-login');
                 
                 console.log('Clicking the login button...');
                 await loginBtn.click();
                 
-                console.log('Waiting 6 seconds for navigation...');
+                console.log('Waiting for navigation away from login page...');
                 await page.waitForTimeout(6000);
                 await snap('after-login-attempt');
 
@@ -277,7 +290,7 @@ jobs:
                 console.log(`Current URL after login attempt: ${currentUrl}`);
                 
                 if (currentUrl.includes('/wsp/login')) {
-                    console.log('❌ Still on login page. Might be a soft block or bad credentials. Retrying with new proxy...');
+                    console.log('❌ Still on login page. Retrying with new proxy...');
                     await context.close();
                     continue;
                 }
@@ -285,12 +298,13 @@ jobs:
                 console.log('🎉 SUCCESS: Navigated away from login page!');
                 success = true;
                 await context.close();
-                break; // Break the retry loop on success
+                break; 
 
               } catch (err) {
                 console.log(`⚠️ Attempt ${attempt} encountered an error: ${err.message}`);
-                await context.close(); // Close proxy connection
-                if (attempt === maxAttempts) throw err; // Bubble up error if out of tries
+                await context.close(); 
+                if (attempt === maxAttempts) throw err; 
+                await new Promise(resolve => setTimeout(resolve, 3000));
               }
             }
 
@@ -305,27 +319,6 @@ jobs:
         id: playwright
         shell: bash
         run: xvfb-run npx playwright test
-
-      - name: Upload Screenshots to Telegram
-        if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -d "login-screenshots" ] || [ -z "$(ls -A login-screenshots/*.png 2>/dev/null)" ]; then
-            echo "No screenshots found to upload."
-            exit 0
-          fi
-          
-          echo "Found screenshots. Sending to Telegram..."
-          for img in login-screenshots/*.png; do
-            filename=$(basename "$img")
-            echo "Uploading $filename..."
-            curl -s -F chat_id="${TELEGRAM_CHAT_ID}" \
-                 -F photo="@$img" \
-                 -F caption="Step: $filename" \
-                 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto" > /dev/null
-            sleep 1
-          done
 
       - name: Update YAML file on successful login
         if: steps.playwright.outcome == 'success'
