@@ -86,7 +86,7 @@ jobs:
               f.write(f"BOL_EMAIL={email}\n")
           PY
 
-      # --- CHANGED: Added playwright-extra & puppeteer-extra-plugin-stealth to dependencies ---
+      # Stealth packages injected here
       - name: Create package.json
         shell: bash
         run: |
@@ -111,7 +111,6 @@ jobs:
         shell: bash
         run: npx playwright install --with-deps chromium
 
-      # --- CHANGED: Disabled standard devices in config to let playwright-extra manage context ---
       - name: Create Playwright config
         shell: bash
         run: |
@@ -139,7 +138,6 @@ jobs:
           });
           EOF
 
-      # --- CHANGED: Script now imports from 'playwright-extra' and registers the stealth plugin ---
       - name: Create Playwright test
         shell: bash
         run: |
@@ -148,11 +146,9 @@ jobs:
           cat > tests/bol-login.spec.js <<'EOF'
           const { test, expect } = require('@playwright/test');
           
-          // Import playwright-extra instead of base playwright
           const { chromium } = require('playwright-extra');
           const StealthPlugin = require('puppeteer-extra-plugin-stealth');
           
-          // Register the stealth plugin to patch fingerprint leaks
           chromium.use(StealthPlugin());
 
           const fs = require('fs');
@@ -182,13 +178,11 @@ jobs:
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               console.log(`\nStarting Attempt ${attempt} of ${maxAttempts}...`);
               
-              // Launch customized browser directly via playwright-extra
               const browserInstance = await chromium.launch({
                 headless: false,
                 args: ['--disable-blink-features=AutomationControlled']
               });
 
-              // Create context with standard locale configurations
               const context = await browserInstance.newContext({
                 locale: 'nl-NL',
                 timezoneId: 'Europe/Amsterdam',
@@ -203,13 +197,16 @@ jobs:
               });
               
               const page = await context.newPage();
-              page.setDefaultNavigationTimeout(30000); 
+              
+              // FAST TIMEOUTS (10s nav, 4s elements)
+              page.setDefaultNavigationTimeout(10000); 
+              page.setDefaultTimeout(4000);
 
               async function snap(name) {
                 const filename = `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`;
                 const file = path.join(screenshotDir, filename);
                 try {
-                  await page.screenshot({ path: file, fullPage: true, timeout: 5000 });
+                  await page.screenshot({ path: file, fullPage: true, timeout: 3000 });
                   console.log(`[STEP ${step}] Screenshot saved: ${file}`);
                   
                   if (botToken && chatId) {
@@ -228,37 +225,32 @@ jobs:
               }
 
               try {
-                console.log('Navigating to bol.com login page...');
-                await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded' });
-                await snap('opened-login-page');
-
+                // Navigate to homepage first to build trust
+                console.log('Navigating to bol.com homepage...');
+                await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
+                
                 const bodyText = await page.innerText('body');
                 if (bodyText.includes('captcha') || bodyText.includes('robot') || bodyText.includes('unusual traffic')) {
-                  console.log('⚠️ Captcha or Block detected! Recycling proxy...');
+                  console.log('⚠️ Block detected on homepage! Recycling proxy...');
                   await browserInstance.close();
                   continue; 
                 }
 
                 const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
-                if (await cookieBtn.isVisible({ timeout: 2000 })) {
+                if (await cookieBtn.isVisible()) {
                   console.log('Cookie banner detected. Clicking accept...');
                   await cookieBtn.click();
                 }
                 await snap('after-cookies');
 
-                if (page.url().includes('/nl/nl/') || !page.url().includes('/wsp/login')) {
-                    const navLoginBtn = page.locator('a:has-text("Inloggen"), button:has-text("Inloggen"), [data-test="login-link"]').first();
-                    if (await navLoginBtn.isVisible({ timeout: 3000 })) {
-                         await navLoginBtn.click();
-                         await page.waitForURL('**/wsp/login**', { timeout: 15000 });
-                         await snap('after-storefront-login-click');
-                    }
-                }
+                console.log('Looking for storefront login button...');
+                const navLoginBtn = page.locator('a:has-text("Inloggen"), button:has-text("Inloggen"), [data-test="login-link"]').first();
+                await navLoginBtn.click();
+                
+                await page.waitForURL('**/wsp/login**', { timeout: 10000 });
+                await snap('login-page-loaded');
 
                 const emailInput = page.locator('input#username, input[name="j_username"]').first();
-                await expect(emailInput).toBeVisible({ timeout: 10000 });
-
-                // Kept fast typing (without delay) as requested
                 await emailInput.click();
                 await page.keyboard.type(email); 
 
@@ -269,7 +261,6 @@ jobs:
                 await snap('credentials-filled');
 
                 const loginBtn = page.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen")').first();
-                await snap('ready-to-click-login');
                 await loginBtn.click();
                 
                 await page.waitForTimeout(4000);
@@ -292,10 +283,10 @@ jobs:
                 break; 
 
               } catch (err) {
-                console.log(`⚠️ Attempt ${attempt} encountered an error: ${err.message}`);
+                console.log(`⚠️ Attempt ${attempt} encountered an error or timeout: ${err.message}`);
                 await browserInstance.close(); 
                 if (attempt === maxAttempts) throw err; 
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await new Promise(resolve => setTimeout(resolve, 500));
               }
             }
 
