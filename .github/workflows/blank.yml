@@ -1,4 +1,4 @@
-name: Playwright Bol Register + Telegram Screenshots
+name: Playwright Bol Register + Login + Computer Search
 
 on:
   workflow_dispatch:
@@ -25,7 +25,9 @@ jobs:
       BOL_PURCHASE_NEWSLETTER: "true"
       BOL_RECOMMENDATION_NEWSLETTER: "false"
       SUBMIT_FORM: "true"
-      BOL_SEARCH_TERM: "koptelefoon"
+
+      LOGIN_URL: "https://login.bol.com/wsp/login"
+      SEARCH_URL: "https://www.bol.com/nl/nl/s/?searchtext=computer&12194=90-100&page=1&bltgh=e28fb3be-ba6d-43bf-aa1e-a7bbc92669d7.g.i.QueryContextHook&filter_N=30640"
 
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
@@ -73,7 +75,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/nl-addresses
-          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v8
+          key: ${{ runner.os }}-nl-addresses-ljpc-nederland-v9
           restore-keys: |
             ${{ runner.os }}-nl-addresses-ljpc-
 
@@ -234,7 +236,7 @@ jobs:
 
           module.exports = defineConfig({
             testDir: './tests',
-            timeout: 180000,
+            timeout: 240000,
             expect: { timeout: 15000 },
             retries: process.env.CI ? 1 : 0,
             reporter: [['html', { open: 'never' }], ['list']],
@@ -276,7 +278,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('register and send screenshots', async ({ page }, testInfo) => {
+          test('register, login, and open target search page', async ({ page }, testInfo) => {
             const screenshotDir = path.join(testInfo.outputDir, 'step-screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
 
@@ -302,7 +304,9 @@ jobs:
               password: process.env.BOL_PASSWORD || '',
               purchaseNewsletter: String(process.env.BOL_PURCHASE_NEWSLETTER || 'true').toLowerCase() === 'true',
               recommendationNewsletter: String(process.env.BOL_RECOMMENDATION_NEWSLETTER || 'false').toLowerCase() === 'true',
-              submit: String(process.env.SUBMIT_FORM || 'false').toLowerCase() === 'true'
+              submit: String(process.env.SUBMIT_FORM || 'false').toLowerCase() === 'true',
+              loginUrl: process.env.LOGIN_URL,
+              searchUrl: process.env.SEARCH_URL
             };
 
             async function gotoWithRetry(url, attempts = 3) {
@@ -440,6 +444,28 @@ jobs:
               return /recaptcha|captcha/i.test(html);
             }
 
+            async function loginIfPossible() {
+              await gotoWithRetry(formData.loginUrl, 3);
+              await waitForStable();
+              await acceptCookiesIfPresent();
+              await snap('login-page-opened');
+
+              const emailFilled = await fillByNameOrLabel(['loginEmail', 'email'], /e-?mail/i, formData.email);
+              const passwordFilled = await fillByNameOrLabel(['password'], /wachtwoord/i, formData.password);
+              await snap('login-form-filled');
+
+              if (emailFilled && passwordFilled) {
+                const loginButton = page.getByRole('button', { name: /inloggen|login/i }).first();
+                if (await loginButton.count()) {
+                  await loginButton.scrollIntoViewIfNeeded();
+                  await page.waitForTimeout(500);
+                  await loginButton.click();
+                  await page.waitForTimeout(4000);
+                  await snap('after-login');
+                }
+              }
+            }
+
             await gotoWithRetry('https://login.bol.com/wsp/register', 3);
             await waitForStable();
             await acceptCookiesIfPresent();
@@ -482,12 +508,7 @@ jobs:
             await setCheckboxById('purchaseNewsletter', formData.purchaseNewsletter);
             await setCheckboxById('recommendationNewsletter', formData.recommendationNewsletter);
 
-            const beforePath = await snap('before-registration');
-            process.env.BEFORE_REGISTRATION_SCREENSHOT = beforePath;
-            await testInfo.attach('before-registration-path.txt', {
-              body: Buffer.from(beforePath),
-              contentType: 'text/plain'
-            });
+            await snap('before-registration');
 
             const captchaPresent = await detectCaptcha();
             if (captchaPresent) {
@@ -503,11 +524,14 @@ jobs:
               await page.waitForTimeout(4000);
             }
 
-            const afterPath = await snap('after-registration');
-            await testInfo.attach('after-registration-path.txt', {
-              body: Buffer.from(afterPath),
-              contentType: 'text/plain'
-            });
+            await snap('after-registration');
+
+            await loginIfPossible();
+
+            await gotoWithRetry(formData.searchUrl, 3);
+            await waitForStable();
+            await acceptCookiesIfPresent();
+            await snap('target-search-page-opened');
           });
           EOF
 
@@ -561,7 +585,7 @@ jobs:
           set -euo pipefail
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d text="bol account workflow succeeded%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
+            -d text="bol workflow succeeded%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}%0AEmail: ${BOL_EMAIL}"
 
       - name: Send before-registration screenshot to Telegram
         if: always()
@@ -596,7 +620,7 @@ jobs:
           set -euo pipefail
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d text="bol account workflow failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            -d text="bol workflow failed%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Upload registered emails file
         if: always()
