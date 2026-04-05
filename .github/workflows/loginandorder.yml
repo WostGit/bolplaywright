@@ -146,7 +146,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('Full inline chain: login -> product search -> add to cart', async () => {
+          test('Full inline chain: login -> product search -> add to cart', async ({}, testInfo) => {
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -211,7 +211,7 @@ jobs:
               });
 
               const page = await context.newPage();
-              page.setDefaultTimeout(30000);
+              page.setDefaultTimeout(40000); 
 
               try {
                 console.log('[FLOW LOG] Navigating to Bol.com homepage...');
@@ -225,41 +225,50 @@ jobs:
 
                 console.log('[FLOW LOG] Clicking Inloggen link...');
                 await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
-                await page.waitForURL('**/wsp/login**', { timeout: 20000 });
+                
+                console.log('[FLOW LOG] Waiting for login page to load...');
+                await page.waitForURL('**/login**', { timeout: 30000 });
                 
                 console.log('[FLOW LOG] Injecting user credentials...');
                 await page.getByRole('textbox', { name: 'E-mailadres' }).fill(email);
                 await page.getByRole('textbox', { name: 'Wachtwoord' }).fill(password);
                 
-                await page.waitForTimeout(500); 
+                await page.waitForTimeout(1000); 
                 await page.getByRole('button', { name: 'Inloggen' }).click();
 
                 console.log('[FLOW LOG] Monitoring for redirection or CAPTCHA...');
                 
                 await Promise.race([
-                  page.waitForSelector('text=/Welkom|bestelling|Hallo/i', { timeout: 35000 }),
-                  page.waitForSelector('text=Ik ben geen robot', { timeout: 35000 }).then(() => {
+                  page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 40000 }),
+                  page.waitForURL('**/account/overzicht**', { timeout: 40000 }),
+                  page.waitForSelector('text=Ik ben geen robot', { timeout: 40000 }).then(() => {
                      throw new Error('RETRY_FLOW');
                   })
                 ]);
-                
+
+                await page.waitForLoadState('networkidle');
                 console.log('[FLOW LOG] Logged in successfully and fully redirected.');
 
-                console.log('[FLOW LOG] Navigating directly to EAN search results...');
-                const ean = '9300000035840899';
-                await page.goto(`https://www.bol.com/nl/nl/s/?searchtext=${ean}`, { waitUntil: 'domcontentloaded' });
+                console.log('[FLOW LOG] Navigating directly to AirTag 4-Pack results...');
+                const ean = '0190199535046';
+                await page.goto(`https://www.bol.com/nl/nl/s/?searchtext=${ean}`, { waitUntil: 'networkidle' });
                 
                 console.log('[FLOW LOG] Locating product link...');
                 const productTitleLink = page.locator('[data-test="product-title"]').first();
                 
-                await expect(productTitleLink).toBeVisible({ timeout: 12000 });
+                const productsCount = await productTitleLink.count();
+                if (productsCount === 0) {
+                   throw new Error('AirTag was not found in search results. Forcing retry.');
+                }
+
+                await expect(productTitleLink).toBeVisible({ timeout: 15000 });
                 await productTitleLink.click();
 
                 const buyButton = page.locator('[data-test="add-to-cart-button"]').first();
                 await expect(buyButton).toBeVisible({ timeout: 20000 });
                 await buyButton.click();
                 
-                await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
+                await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', { waitUntil: 'networkidle' });
                 console.log(`[FLOW LOG] Cart page loaded successfully: ${page.url()}`);
                 
                 success = true;
