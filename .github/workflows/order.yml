@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [main, master]
 
-
 permissions:
   contents: read
 
@@ -78,6 +77,11 @@ jobs:
               headless: false, 
               viewport: { width: 1366, height: 768 },
               screenshot: 'only-on-failure',
+              proxy: {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              }
             },
             projects: [{ name: 'chromium' }]
           });
@@ -109,7 +113,12 @@ jobs:
 
             const browserInstance = await chromium.launch({
               headless: false,
-              args: ['--disable-blink-features=AutomationControlled']
+              args: ['--disable-blink-features=AutomationControlled'],
+              proxy: {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              }
             });
 
             const statePath = path.join(process.cwd(), 'state.json');
