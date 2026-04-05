@@ -397,9 +397,3 @@ jobs:
           name: playwright-login-report
           path: playwright-report/
           retention-days: 14
-
-  trigger-ordering:
-    needs: playwright-login 
-    if: success() 
-    uses: ./.github/workflows/order.yml
-    secrets: inherit
