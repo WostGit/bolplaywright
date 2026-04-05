@@ -221,28 +221,23 @@ jobs:
               await dumpDomAndDie('Initial Login Setup', err);
             }
             
-            // --- STAGE 2: STRICT REDIRECTION CHECK ---
-            console.log('[FLOW LOG] Waiting for return redirection back to Bol.com...');
+            // --- STAGE 2: ADAPTIVE REDIRECTION CHECK ---
+            console.log('[FLOW LOG] Waiting for return redirection back to Bol.com dashboard or shop...');
             try {
-              await page.waitForURL(/https:\/\/www\.bol\.com\/nl\/nl\/.*/, { timeout: 40000 });
+              await page.waitForURL(/https:\/\/www\.bol\.com\/.*/, { timeout: 40000 });
               console.log('[FLOW LOG] Successfully redirected. Login confirmed!');
             } catch (err) {
               await dumpDomAndDie('Post-Login Redirect Wait', err);
             }
 
-            // --- STAGE 3: SEARCH ---
-            console.log('[FLOW LOG] Finding search bar...');
+            // --- STAGE 3: SEARCH VIA DIRECT URL ---
+            console.log('[FLOW LOG] Navigating directly to EAN search results...');
             try {
-              const searchBar = page.getByRole('searchbox').or(page.getByPlaceholder(/Zoeken naar/i)).first();
-              await expect(searchBar).toBeVisible({ timeout: 15000 });
-              
-              console.log('[FLOW LOG] Typing EAN into search...');
-              await searchBar.fill('9300000035840899'); 
-              await page.keyboard.press('Enter');
-              
-              await page.waitForURL('**/s/?searchtext=**', { timeout: 20000 });
+              const ean = '9300000035840899';
+              await page.goto(`https://www.bol.com/nl/nl/s/?searchtext=${ean}`, { waitUntil: 'domcontentloaded' });
+              console.log('[FLOW LOG] Search page loaded.');
             } catch (err) {
-              await dumpDomAndDie('Product Search Execution', err);
+              await dumpDomAndDie('Direct Product Search Execution', err);
             }
             
             // --- STAGE 4: ADD TO CART ---
