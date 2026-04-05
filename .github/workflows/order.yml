@@ -1,0 +1,198 @@
+name: Playwright Bol Ordering
+on:
+  workflow_call: 
+  workflow_dispatch: 
+
+permissions:
+  contents: write
+
+jobs:
+  playwright-order:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install
+          npx playwright install --with-deps chromium
+
+      # Downloads the session state file saved by the successful login run
+      - name: Download Auth State
+        uses: actions/download-artifact@v4
+        with:
+          name: playwright-state
+          path: .
+
+      - name: Verify Auth State Exists
+        shell: bash
+        run: |
+          if [ ! -f "state.json" ]; then
+            echo "❌ ERROR: state.json was not found! The login step might not have saved it correctly."
+            exit 1
+          fi
+          echo "✅ state.json found. Proceeding to ordering."
+
+      # Creates the ordering script dynamically just like login.yml did
+      - name: Create Ordering Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tests
+          cat > tests/bol-ordering.spec.js <<'EOF'
+          const { test, expect } = require('@playwright/test');
+          const fs = require('fs');
+          const path = require('path');
+          const { execSync } = require('child_process');
+
+          test('order item and verify success', async ({ browser }, testInfo) => {
+            const screenshotDir = path.join(process.cwd(), 'order-screenshots');
+            fs.mkdirSync(screenshotDir, { recursive: true });
+            let step = 1;
+
+            const botToken = process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = process.env.TELEGRAM_CHAT_ID;
+
+            console.log('--- ORDERING TEST START ---');
+
+            const maxAttempts = 5; 
+            let success = false;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              console.log(`\nStarting Attempt ${attempt} of ${maxAttempts}...`);
+              
+              // Load the injected login state but still route through a proxy
+              const context = await browser.newContext({
+                storageState: 'state.json',
+                proxy: {
+                  server: process.env.PROXY_SERVER,
+                  username: process.env.PROXY_USERNAME,
+                  password: process.env.PROXY_PASSWORD
+                }
+              });
+              
+              const page = await context.newPage();
+              page.setDefaultNavigationTimeout(30000); 
+
+              async function snap(name) {
+                const filename = `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`;
+                const file = path.join(screenshotDir, filename);
+                try {
+                  await page.screenshot({ path: file, fullPage: true, timeout: 5000 });
+                  console.log(`[STEP ${this.step}] Screenshot saved: ${file}`);
+                  step += 1;
+
+                  if (botToken && chatId) {
+                    console.log(`Sending ${filename} to Telegram...`);
+                    try {
+                      execSync(`curl -s -F chat_id="${chatId}" -F photo="@${file}" -F caption="Step: ${filename}" "https://api.telegram.org/bot${botToken}/sendPhoto"`, { stdio: 'ignore' });
+                    } catch (telegramErr) {
+                      console.log(`Telegram dispatch failed: ${telegramErr.message}`);
+                    }
+                  }
+                  
+                  return file;
+                } catch (e) {
+                  console.log(`[STEP ${step}] Screenshot failed (Proxy probably hung): ${e.message}`);
+                }
+              }
+
+              try {
+                // Cloak webdriver just in case
+                await page.addInitScript(() => {
+                  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                });
+
+                console.log('Navigating directly to Bol account dashboard to check session...');
+                await page.goto('https://www.bol.com/nl/rnwy/account/overzicht', { waitUntil: 'domcontentloaded' });
+                await page.waitForTimeout(2000); 
+                await snap('dashboard-check');
+
+                const bodyText = await page.innerText('body');
+                if (bodyText.includes('captcha') || bodyText.includes('robot') || bodyText.includes('unusual traffic')) {
+                  console.log('⚠️ Captcha or Block detected on ordering flow! Recycling proxy...');
+                  await context.close();
+                  continue; 
+                }
+
+                // If redirected away from account, session failed.
+                if (page.url().includes('/login')) {
+                    console.log('❌ Session expired or rejected. Cannot proceed with order.');
+                    throw new Error('Storage state failed to preserve logged-in session.');
+                }
+
+                console.log('Session verified successfully.');
+
+                // --- ADD YOUR SPECIFIC PRODUCT ORDERING STEPS HERE ---
+                // Example:
+                // console.log('Searching for item...');
+                // await page.goto('https://www.bol.com/nl/nl/p/example-product-id');
+                // await snap('product-page');
+                // ... fill fields ...
+                
+                console.log('🎉 SUCCESS: Completed Ordering Sequence.');
+                success = true;
+                await context.close();
+                break; 
+
+              } catch (err) {
+                console.log(`⚠️ Attempt ${attempt} encountered an error: ${err.message}`);
+                await context.close(); 
+                if (attempt === maxAttempts) throw err; 
+                await new Promise(resolve => setTimeout(resolve, 3000));
+              }
+            }
+
+            if (!success) {
+              throw new Error('Failed to complete order after max proxy rotation attempts.');
+            }
+            console.log('--- ORDERING TEST END ---');
+          });
+          EOF
+
+      - name: Run Playwright test
+        id: playwright
+        shell: bash
+        run: xvfb-run npx playwright test tests/bol-ordering.spec.js
+
+      - name: Send Telegram success message
+        if: steps.playwright.outcome == 'success' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="bol ordering flow completed successfully!%0ARepo: ${{ github.repository }}"
+
+      - name: Send Telegram failure message
+        if: steps.playwright.outcome != 'success' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="bol ordering flow failed!%0ARepo: ${{ github.repository }}%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-order-report
+          path: playwright-report/
+          retention-days: 14
