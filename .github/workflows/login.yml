@@ -186,10 +186,17 @@ jobs:
             // 1. Navigation
             console.log('Navigating to bol.com login page...');
             await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await page.waitForTimeout(2000); 
+            await page.waitForTimeout(3000); 
             await snap('opened-login-page');
 
-            // 2. Cookie handling
+            // 2. Map Frames (Diagnostic)
+            const frames = page.frames();
+            console.log(`Detected ${frames.length} frame(s) on page.`);
+            frames.forEach((frame, index) => {
+              console.log(`Frame ${index} URL: ${frame.url()}`);
+            });
+
+            // 3. Cookie handling
             console.log('Checking for cookie consent buttons...');
             const cookieBtn = page.locator('button:has-text("Accepteren"), button:has-text("Alles accepteren")').first();
             try {
@@ -205,24 +212,67 @@ jobs:
             }
             await snap('after-cookies');
 
-            // 3. Form Interaction (Using targeted IDs/names from your HTML trace)
-            console.log('Looking for email and password fields...');
+            // 4. Form Interaction
+            console.log('Locating credentials fields...');
             
-            const emailInput = page.locator('input#username, input[name="j_username"]').first();
-            const passwordInput = page.locator('input#password, input[name="j_password"]').first();
+            // Broad array of potential fields to escape iframe rendering anomalies
+            const emailSelectors = [
+              'input#username', 
+              'input[name="j_username"]', 
+              'input[type="email"]', 
+              'input[autocomplete="email"]'
+            ];
+            
+            let emailInput = null;
+            let targetFrame = page; // Default to main page
 
-            console.log('Waiting for email input to be visible...');
-            await expect(emailInput).toBeVisible({ timeout: 15000 });
-            
-            console.log('Filling credentials...');
+            // Check main page first
+            for (const selector of emailSelectors) {
+                const loc = page.locator(selector).first();
+                if (await loc.isVisible({ timeout: 1000 }).catch(() => false)) {
+                     emailInput = loc;
+                     console.log(`Found email field on top-level page with selector: ${selector}`);
+                     break;
+                }
+            }
+
+            // If not found on top-level, search inside iframes
+            if (!emailInput) {
+                console.log('Email field not found on main frame. Checking secondary iframes...');
+                for (const frame of frames) {
+                    if (frame === page.mainFrame()) continue;
+                    for (const selector of emailSelectors) {
+                        const loc = frame.locator(selector).first();
+                        if (await loc.isVisible({ timeout: 500 }).catch(() => false)) {
+                            emailInput = loc;
+                            targetFrame = frame;
+                            console.log(`Found email field inside iframe [${frame.url()}] with selector: ${selector}`);
+                            break;
+                        }
+                    }
+                    if (emailInput) break;
+                }
+            }
+
+            // Ultimate Fallback check
+            if (!emailInput) {
+                 console.log('CRITICAL: Form fields could not be auto-detected. Attempting forced wait on top-level fallback...');
+                 emailInput = page.locator('input[name="j_username"]').first();
+                 await expect(emailInput).toBeVisible({ timeout: 15000 });
+            }
+
+            // 5. Fill credentials and submit
+            console.log('Filling credentials into target frame...');
             await emailInput.fill(email);
+            
+            const passwordInput = targetFrame.locator('input#password, input[name="j_password"], input[type="password"]').first();
             await passwordInput.fill(password);
+            
             console.log('Credentials filled successfully.');
             await snap('credentials-filled');
 
-            // 4. Click login
             console.log('Looking for the submit button...');
-            const loginBtn = page.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen")').first();
+            const loginBtn = targetFrame.locator('button#submit, button[type="SUBMIT"]:has-text("Inloggen"), button:has-text("Inloggen")').first();
             
             console.log('Clicking the login button...');
             await loginBtn.click();
@@ -231,18 +281,16 @@ jobs:
             await page.waitForTimeout(6000);
             await snap('after-login-attempt');
 
-            // 5. Verify outcomes
+            // 6. Verify outcomes
             console.log('Analyzing result page...');
             
-            // Check for immediate inline errors on the page
-            const errorElement = page.locator('[aria-live="assertive"], [class*="error"]').first();
+            const errorElement = targetFrame.locator('[aria-live="assertive"], [class*="error"]').first();
             if (await errorElement.isVisible({ timeout: 1000 })) {
                 const errorText = await errorElement.innerText();
                 console.log(`❌ FAILED: Found error text on page: "${errorText}"`);
                 throw new Error(`Login failed with error on page: ${errorText}`);
             }
 
-            // Fallback check: Are we still on the login URL?
             const currentUrl = page.url();
             console.log(`Current URL after login attempt: ${currentUrl}`);
             
