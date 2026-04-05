@@ -111,7 +111,19 @@ jobs:
         shell: bash
         run: npm install
 
+      # NEW STEP: Caches browsers based on your package.json version
+      - name: "[System] Cache Playwright browsers"
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: "[System] Install Playwright Chromium with deps"
+        # REVISED: Only runs if there's no cache hit
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         shell: bash
         run: npx playwright install --with-deps chromium
 
