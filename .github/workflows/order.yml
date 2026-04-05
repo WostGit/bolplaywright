@@ -1,7 +1,13 @@
-name: Playwright Bol Add to Cart
+name: Playwright Bol Login & Add to Cart
 on:
   workflow_dispatch:
-  workflow_call:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  # THIS IS THE CRITICAL HANDOFF RECEIVER
+  repository_dispatch:
+    types: [registration_complete]
 
 permissions:
   contents: read
