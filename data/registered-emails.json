@@ -43,5 +43,12 @@
     "email": "dirkdebruijn@qrlfoundation.org",
     "run_id": "24000735759",
     "used_to_login": false
+  },
+  {
+    "email": "rikwouters@qrlfoundation.org",
+    "run_id": "24000838229",
+    "repository": "WostGit/bolplaywright",
+    "workflow": "Playwright Bol Registration Only",
+    "used_to_login": false
   }
 ]
