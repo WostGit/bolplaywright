@@ -86,6 +86,7 @@ jobs:
               f.write(f"BOL_EMAIL={email}\n")
           PY
 
+      # --- CHANGED: Added playwright-extra & puppeteer-extra-plugin-stealth to dependencies ---
       - name: Create package.json
         shell: bash
         run: |
@@ -95,7 +96,9 @@ jobs:
             "name": "playwright-bol-login-only",
             "private": true,
             "devDependencies": {
-              "@playwright/test": "^1.54.0"
+              "@playwright/test": "^1.54.0",
+              "playwright-extra": "^4.3.6",
+              "puppeteer-extra-plugin-stealth": "^2.11.2"
             }
           }
           EOF
@@ -108,6 +111,7 @@ jobs:
         shell: bash
         run: npx playwright install --with-deps chromium
 
+      # --- CHANGED: Disabled standard devices in config to let playwright-extra manage context ---
       - name: Create Playwright config
         shell: bash
         run: |
@@ -122,27 +126,20 @@ jobs:
             reporter: [['html', { open: 'never' }], ['list']],
             use: {
               headless: false, 
-              locale: 'nl-NL',
-              timezoneId: 'Europe/Amsterdam',
               viewport: { width: 1366, height: 768 },
-              colorScheme: 'light',
               screenshot: 'only-on-failure',
               trace: 'retain-on-failure',
               video: 'retain-on-failure'
             },
             projects: [
               {
-                name: 'chromium',
-                use: { 
-                  launchOptions: {
-                    args: ['--disable-blink-features=AutomationControlled']
-                  }
-                }
+                name: 'chromium'
               }
             ]
           });
           EOF
 
+      # --- CHANGED: Script now imports from 'playwright-extra' and registers the stealth plugin ---
       - name: Create Playwright test
         shell: bash
         run: |
@@ -150,11 +147,19 @@ jobs:
           mkdir -p tests
           cat > tests/bol-login.spec.js <<'EOF'
           const { test, expect } = require('@playwright/test');
+          
+          // Import playwright-extra instead of base playwright
+          const { chromium } = require('playwright-extra');
+          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+          
+          // Register the stealth plugin to patch fingerprint leaks
+          chromium.use(StealthPlugin());
+
           const fs = require('fs');
           const path = require('path');
           const { execSync } = require('child_process');
 
-          test('login only and verify success', async ({ browser }) => {
+          test('login only and verify success', async () => {
             const screenshotDir = path.join(process.cwd(), 'login-screenshots');
             fs.mkdirSync(screenshotDir, { recursive: true });
             let step = 1;
@@ -177,7 +182,14 @@ jobs:
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               console.log(`\nStarting Attempt ${attempt} of ${maxAttempts}...`);
               
-              const context = await browser.newContext({
+              // Launch customized browser directly via playwright-extra
+              const browserInstance = await chromium.launch({
+                headless: false,
+                args: ['--disable-blink-features=AutomationControlled']
+              });
+
+              // Create context with standard locale configurations
+              const context = await browserInstance.newContext({
                 locale: 'nl-NL',
                 timezoneId: 'Europe/Amsterdam',
                 extraHTTPHeaders: {
@@ -193,7 +205,6 @@ jobs:
               const page = await context.newPage();
               page.setDefaultNavigationTimeout(30000); 
 
-              // Modified to FORCE Telegram pushes directly after snaps
               async function snap(name) {
                 const filename = `attempt${attempt}-${String(step).padStart(2, '0')}-${name}.png`;
                 const file = path.join(screenshotDir, filename);
@@ -217,10 +228,6 @@ jobs:
               }
 
               try {
-                await page.addInitScript(() => {
-                  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                });
-
                 console.log('Navigating to bol.com login page...');
                 await page.goto('https://login.bol.com/wsp/login', { waitUntil: 'domcontentloaded' });
                 await snap('opened-login-page');
@@ -228,7 +235,7 @@ jobs:
                 const bodyText = await page.innerText('body');
                 if (bodyText.includes('captcha') || bodyText.includes('robot') || bodyText.includes('unusual traffic')) {
                   console.log('⚠️ Captcha or Block detected! Recycling proxy...');
-                  await context.close();
+                  await browserInstance.close();
                   continue; 
                 }
 
@@ -251,7 +258,7 @@ jobs:
                 const emailInput = page.locator('input#username, input[name="j_username"]').first();
                 await expect(emailInput).toBeVisible({ timeout: 10000 });
 
-                // Removed delays and human hover simulations
+                // Kept fast typing (without delay) as requested
                 await emailInput.click();
                 await page.keyboard.type(email); 
 
@@ -265,7 +272,6 @@ jobs:
                 await snap('ready-to-click-login');
                 await loginBtn.click();
                 
-                // Keep brief grace period for backend to register navigation
                 await page.waitForTimeout(4000);
                 await snap('after-login-attempt');
 
@@ -274,7 +280,7 @@ jobs:
                 
                 if (currentUrl.includes('/wsp/login')) {
                     console.log('❌ Still on login page. Retrying with new proxy...');
-                    await context.close();
+                    await browserInstance.close();
                     continue;
                 }
 
@@ -282,12 +288,12 @@ jobs:
                 await context.storageState({ path: 'state.json' });
 
                 success = true;
-                await context.close();
+                await browserInstance.close();
                 break; 
 
               } catch (err) {
                 console.log(`⚠️ Attempt ${attempt} encountered an error: ${err.message}`);
-                await context.close(); 
+                await browserInstance.close(); 
                 if (attempt === maxAttempts) throw err; 
                 await new Promise(resolve => setTimeout(resolve, 1000));
               }
