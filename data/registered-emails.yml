@@ -257,3 +257,10 @@
   used_to_login: false
   created_at: 2026-04-06 08:03:59 UTC
   last_login_at: null
+- email: oliviervisser@qrlfoundation.org
+  run_id: '24028577418'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-06 10:36:32 UTC
+  last_login_at: null
