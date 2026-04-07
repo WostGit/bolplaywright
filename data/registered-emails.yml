@@ -397,3 +397,10 @@
   used_to_login: false
   created_at: 2026-04-07 10:15:04 UTC
   last_login_at: null
+- email: jasperboot@qrlfoundation.org
+  run_id: '24085327122'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-07 14:00:11 UTC
+  last_login_at: null
