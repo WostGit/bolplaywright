@@ -495,3 +495,10 @@
   used_to_login: false
   created_at: 2026-04-08 21:49:40 UTC
   last_login_at: null
+- email: finndegraaf@qrlfoundation.org
+  run_id: '24161888710'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-08 22:27:26 UTC
+  last_login_at: null
