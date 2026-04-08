@@ -453,3 +453,10 @@
   used_to_login: false
   created_at: 2026-04-08 12:42:08 UTC
   last_login_at: null
+- email: caspost@qrlfoundation.org
+  run_id: '24140193200'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-08 14:17:28 UTC
+  last_login_at: null
