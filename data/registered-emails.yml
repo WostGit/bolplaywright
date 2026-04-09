@@ -614,3 +614,10 @@
   used_to_login: false
   created_at: 2026-04-09 21:59:33 UTC
   last_login_at: null
+- email: adammol@qrlfoundation.org
+  run_id: '24217175903'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-09 22:52:21 UTC
+  last_login_at: null
