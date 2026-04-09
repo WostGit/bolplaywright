@@ -565,3 +565,10 @@
   used_to_login: false
   created_at: 2026-04-09 14:10:27 UTC
   last_login_at: null
+- email: keespeeters@qrlfoundation.org
+  run_id: '24199822098'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-09 15:56:35 UTC
+  last_login_at: null
