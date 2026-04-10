@@ -656,3 +656,10 @@
   used_to_login: false
   created_at: 2026-04-10 10:57:45 UTC
   last_login_at: null
+- email: danielmeijer@qrlfoundation.org
+  run_id: '24241497580'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-10 11:51:54 UTC
+  last_login_at: null
