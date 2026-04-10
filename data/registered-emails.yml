@@ -705,3 +705,10 @@
   used_to_login: false
   created_at: 2026-04-10 19:51:03 UTC
   last_login_at: null
+- email: bramjonker@qrlfoundation.org
+  run_id: '24262453772'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-10 20:23:30 UTC
+  last_login_at: null
