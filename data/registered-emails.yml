@@ -677,3 +677,10 @@
   used_to_login: false
   created_at: 2026-04-10 14:16:32 UTC
   last_login_at: null
+- email: olivierpost@qrlfoundation.org
+  run_id: '24249392446'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-10 15:02:50 UTC
+  last_login_at: null
