@@ -880,3 +880,10 @@
   used_to_login: false
   created_at: 2026-04-11 20:17:59 UTC
   last_login_at: null
+- email: basmulder@qrlfoundation.org
+  run_id: '24291393142'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-11 20:55:28 UTC
+  last_login_at: null
