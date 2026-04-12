@@ -971,3 +971,10 @@
   used_to_login: false
   created_at: 2026-04-12 10:10:00 UTC
   last_login_at: null
+- email: benjaminhermans@qrlfoundation.org
+  run_id: '24305109510'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-12 10:59:52 UTC
+  last_login_at: null
