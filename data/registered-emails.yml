@@ -936,3 +936,10 @@
   used_to_login: false
   created_at: 2026-04-12 04:21:56 UTC
   last_login_at: null
+- email: hugomulder@qrlfoundation.org
+  run_id: '24300136567'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-12 06:08:04 UTC
+  last_login_at: null
