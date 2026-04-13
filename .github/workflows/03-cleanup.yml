@@ -1,0 +1,52 @@
+name: "3. Cleanup and Push"
+
+on:
+  workflow_run:
+    workflows: ["2. Playwright Execution"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: "[System] Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "[System] Download Results"
+        uses: actions/download-artifact@v4
+        with:
+          name: bol-results
+
+      - name: "[Cleanup] Update YAML"
+        run: |
+          pip install pyyaml
+          python <<'PY'
+          import yaml, os
+          from datetime import datetime, timezone
+          path = "data/registered-emails.yml"
+          with open("selected_email.txt", "r") as f:
+              email = f.read().strip()
+          with open(path, "r") as f:
+              data = yaml.safe_load(f) or []
+          for entry in data:
+              if entry.get("email") == email:
+                  entry["used_to_login"] = True
+                  entry["last_login_at"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                  break
+          with open(path, "w") as f:
+              yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+          PY
+
+      - name: "[System] Push Changes"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/registered-emails.yml
+          git commit -m "Automated update: Locked email $(cat selected_email.txt)" || exit 0
+          git push
