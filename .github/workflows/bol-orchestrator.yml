@@ -9,25 +9,41 @@ permissions:
   contents: write
 
 jobs:
-  extract-email:
-    uses: ./.github/workflows/bol-extract-email.yml
+  setup:
+    uses: ./.github/workflows/bol-setup.yml
     secrets: inherit
 
-  prepare:
-    needs: extract-email
-    uses: ./.github/workflows/bol-prepare.yml
-    secrets: inherit
-
-  run-flow:
-    needs: [extract-email, prepare]
-    uses: ./.github/workflows/bol-run-flow.yml
+  login:
+    needs: setup
+    uses: ./.github/workflows/bol-step-login.yml
     secrets: inherit
     with:
-      bol-email: ${{ needs.extract-email.outputs.bol-email }}
+      bol-email: ${{ needs.setup.outputs.bol-email }}
+
+  search-and-add-to-cart:
+    needs: login
+    uses: ./.github/workflows/bol-step-search-add-cart.yml
+    secrets: inherit
+    with:
+      bol-email: ${{ needs.setup.outputs.bol-email }}
+
+  go-to-order:
+    needs: search-and-add-to-cart
+    uses: ./.github/workflows/bol-step-go-to-order.yml
+    secrets: inherit
+    with:
+      bol-email: ${{ needs.setup.outputs.bol-email }}
+
+  check-order:
+    needs: go-to-order
+    uses: ./.github/workflows/bol-step-check-order.yml
+    secrets: inherit
+    with:
+      bol-email: ${{ needs.setup.outputs.bol-email }}
 
   update-and-commit:
-    needs: run-flow
+    needs: check-order
     uses: ./.github/workflows/bol-update-commit.yml
     secrets: inherit
     with:
-      bol-email: ${{ needs.extract-email.outputs.bol-email }}
+      bol-email: ${{ needs.setup.outputs.bol-email }}
