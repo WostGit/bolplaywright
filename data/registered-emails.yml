@@ -170,9 +170,9 @@
   run_id: '24010233176'
   repository: WostGit/bolplaywright
   workflow: Playwright Bol Registration Only
-  used_to_login: false
+  used_to_login: true
   created_at: 2026-04-05 20:54:34 UTC
-  last_login_at: null
+  last_login_at: 2026-04-13 21:25:37 UTC
 - email: paulvisser@qrlfoundation.org
   run_id: '24010787139'
   repository: WostGit/bolplaywright
