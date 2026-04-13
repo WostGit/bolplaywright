@@ -1,0 +1,49 @@
+name: Bol - Extract Email
+
+on:
+  workflow_call:
+    outputs:
+      bol-email:
+        description: "Selected unused email"
+        value: ${{ jobs.extract.outputs.bol-email }}
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    outputs:
+      bol-email: ${{ steps.get-email.outputs.bol-email }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Extract unused email
+        id: get-email
+        shell: bash
+        run: |
+          set -euo pipefail
+          python <<'PY'
+          import yaml, os, sys
+          path = "data/registered-emails.yml"
+          if not os.path.exists(path):
+              print("[FATAL ERROR] No registration file found!")
+              sys.exit(1)
+          with open(path, "r", encoding="utf-8") as f:
+              data = yaml.safe_load(f) or []
+          target = next((e for e in data if not e.get("used_to_login", False)), None)
+          if not target:
+              print("[FATAL ERROR] No unused accounts available!")
+              sys.exit(1)
+          email = target["email"]
+          print(f"[SUCCESS] Target account: {email}")
+          print(f"bol-email={email}" >> $GITHUB_OUTPUT)
+          PY
