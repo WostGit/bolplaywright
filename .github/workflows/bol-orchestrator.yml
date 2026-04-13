@@ -1,0 +1,33 @@
+name: Playwright Bol Unified Flow - Orchestrator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  extract-email:
+    uses: ./.github/workflows/bol-extract-email.yml
+    secrets: inherit
+
+  prepare:
+    needs: extract-email
+    uses: ./.github/workflows/bol-prepare.yml
+    secrets: inherit
+
+  run-flow:
+    needs: [extract-email, prepare]
+    uses: ./.github/workflows/bol-run-flow.yml
+    secrets: inherit
+    with:
+      bol-email: ${{ needs.extract-email.outputs.bol-email }}
+
+  update-and-commit:
+    needs: run-flow
+    uses: ./.github/workflows/bol-update-commit.yml
+    secrets: inherit
+    with:
+      bol-email: ${{ needs.extract-email.outputs.bol-email }}
