@@ -1,0 +1,69 @@
+name: "1. Setup and Prep"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "[System] Checkout Repository"
+        uses: actions/checkout@v4
+
+      - name: "[System] Setup Node.js & Python"
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "[Prep] Extract Email and Generate Configs"
+        shell: bash
+        run: |
+          pip install pyyaml
+          # Extract email and save to a file for the next workflow
+          python <<'PY'
+          import yaml, os
+          path = "data/registered-emails.yml"
+          if not os.path.exists(path): exit(1)
+          with open(path, "r") as f:
+              data = yaml.safe_load(f) or []
+          target = next((e for e in data if not e.get("used_to_login")), None)
+          if not target: exit(1)
+          with open("selected_email.txt", "w") as f:
+              f.write(target['email'])
+          PY
+
+          # Generate Project Files
+          cat > package.json <<'EOF'
+          {
+            "name": "bol-flow",
+            "private": true,
+            "devDependencies": { "@playwright/test": "^1.54.0" }
+          }
+          EOF
+
+          cat > playwright.config.js <<'EOF'
+          const { defineConfig } = require('@playwright/test');
+          module.exports = defineConfig({
+            timeout: 300000,
+            expect: { timeout: 15000 },
+            use: { headless: false, viewport: { width: 1366, height: 768 } },
+            projects: [{ name: 'chromium' }]
+          });
+          EOF
+
+      - name: "[System] Upload Workspace"
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-workspace
+          path: |
+            package.json
+            playwright.config.js
+            selected_email.txt
+            data/registered-emails.yml
+          retention-days: 1
