@@ -1,4 +1,4 @@
-name: Bol - Prepare Project
+name: Bol - 2. Prepare Project & Dependencies
 
 on:
   workflow_call:
@@ -7,17 +7,41 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Create package.json and playwright.config.js
+      - name: Create project files dynamically
+        shell: bash
         run: |
-          # Paste your original cat > package.json and cat > playwright.config.js here
+          set -euo pipefail
+          cat > package.json <<'EOF'
+          {
+            "name": "bol-flow",
+            "private": true,
+            "devDependencies": {
+              "@playwright/test": "^1.54.0"
+            }
+          }
+          EOF
+          cat > playwright.config.js <<'EOF'
+          const { defineConfig } = require('@playwright/test');
+          module.exports = defineConfig({
+            timeout: 300000,
+            expect: { timeout: 15000 },
+            use: {
+              headless: false,
+              viewport: { width: 1366, height: 768 }
+            },
+            projects: [{ name: 'chromium' }]
+          });
+          EOF
 
-      - name: Install Node dependencies
+      - name: Install Node Dependencies
         run: npm install
 
       - name: Cache Playwright browsers
@@ -26,12 +50,16 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('package.json') }}
-          restore-keys: ${{ runner.os }}-playwright-
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright Chromium with proper deps
+        shell: bash
         run: |
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "[CACHE HIT] Skipping browser download. Verifying OS dependencies only..."
             npx playwright install-deps chromium
           else
+            echo "[CACHE MISS] Downloading browser and dependencies..."
             npx playwright install --with-deps chromium
           fi
