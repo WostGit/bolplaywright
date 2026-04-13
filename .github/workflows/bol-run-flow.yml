@@ -1,0 +1,195 @@
+name: Bol - 3. Run Playwright Flow
+
+on:
+  workflow_call:
+    inputs:
+      bol-email:
+        required: true
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BOL_EMAIL: ${{ inputs.bol-email }}
+      BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Execute Full Login and Cart Sequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "================================================================="
+          echo " STEP 1: LOGGING IN AND PROCEEDING TO ORDER DIRECTLY"
+          echo "================================================================="
+
+          cat > bol-flow.spec.js <<'EOF'
+          const { test, expect, chromium } = require('@playwright/test');
+          const fs = require('fs');
+          const path = require('path');
+
+          test('Full inline chain: login -> product search -> add to cart', async ({}, testInfo) => {
+            const email = process.env.BOL_EMAIL;
+            const password = process.env.BOL_PASSWORD;
+            const botToken = process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = process.env.TELEGRAM_CHAT_ID;
+
+            let attempts = 0;
+            const maxAttempts = 3;
+            let success = false;
+
+            async function sendTelegramAlert(filePath, caption) {
+              if (!botToken || !chatId) {
+                console.log('[FLOW LOG] Skipping Telegram alert (credentials missing).');
+                return;
+              }
+              try {
+                const { request } = require('@playwright/test');
+                const apiContext = await request.newContext();
+                const fileBuffer = fs.readFileSync(filePath);
+
+                const response = await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
+                  multipart: {
+                    chat_id: chatId,
+                    caption: caption,
+                    photo: {
+                      name: path.basename(filePath),
+                      mimeType: 'image/png',
+                      buffer: fileBuffer,
+                    }
+                  }
+                });
+
+                if (response.ok()) {
+                  console.log('[FLOW LOG] Telegram screenshot successfully sent.');
+                } else {
+                  console.error(`[ERROR] Telegram API failed: ${response.status()}`);
+                }
+              } catch (err) {
+                console.error(`[ERROR] Failed to send Telegram notification: ${err.message}`);
+              }
+            }
+
+            while (attempts < maxAttempts && !success) {
+              attempts++;
+              console.log(`\n[FLOW LOG] Starting attempt ${attempts} of ${maxAttempts}...`);
+
+              const browser = await chromium.launch({
+                headless: false,
+                args: [
+                  '--disable-blink-features=AutomationControlled',
+                  '--disable-features=IsolateOrigins,site-per-process',
+                  '--disable-infobars'
+                ]
+              });
+              const context = await browser.newContext({
+                locale: 'nl-NL',
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                proxy: {
+                  server: process.env.PROXY_SERVER,
+                  username: process.env.PROXY_USERNAME,
+                  password: process.env.PROXY_PASSWORD
+                }
+              });
+              const page = await context.newPage();
+              page.setDefaultTimeout(40000);
+
+              try {
+                console.log('[FLOW LOG] Navigating to Bol.com homepage...');
+                await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
+
+                const cookieBtn = page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).first();
+                try {
+                  await cookieBtn.waitFor({ state: 'visible', timeout: 5000 });
+                  await cookieBtn.click();
+                } catch (e) {}
+
+                console.log('[FLOW LOG] Clicking Inloggen link...');
+                await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
+
+                console.log('[FLOW LOG] Waiting for login page to load...');
+                await page.waitForURL('**/login**', { timeout: 30000 });
+
+                console.log('[FLOW LOG] Injecting user credentials...');
+                await page.getByRole('textbox', { name: 'E-mailadres' }).fill(email);
+                await page.getByRole('textbox', { name: 'Wachtwoord' }).fill(password);
+
+                const loginPrepPath = `login-credentials-filled-attempt-${attempts}.png`;
+                await page.screenshot({ path: loginPrepPath, fullPage: false });
+                await sendTelegramAlert(loginPrepPath, `[Attempt ${attempts}] Credentials typed. Proceeding to submit.`);
+
+                await page.waitForTimeout(1000);
+                await page.getByRole('button', { name: 'Inloggen' }).click();
+
+                console.log('[FLOW LOG] Monitoring for redirection or CAPTCHA...');
+                await Promise.race([
+                  page.waitForURL('https://www.bol.com/nl/nl/', { timeout: 40000 }),
+                  page.waitForURL('**/account/overzicht**', { timeout: 40000 }),
+                  page.waitForSelector('text=Ik ben geen robot', { timeout: 40000 }).then(() => {
+                     throw new Error('RETRY_FLOW');
+                  })
+                ]);
+
+                await page.waitForLoadState('networkidle');
+                console.log('[FLOW LOG] Logged in successfully and fully redirected.');
+
+                const landingPath = `login-success-landing-attempt-${attempts}.png`;
+                await page.screenshot({ path: landingPath, fullPage: false });
+                await sendTelegramAlert(landingPath, `[Attempt ${attempts}] Logged in successfully! Landing state captured.`);
+
+                console.log('[FLOW LOG] Forcing direct cart add for AirTag 4-Pack...');
+                await page.goto('https://www.bol.com/nl/order/basket/addItems.html?productId=9300000035840899&offerUid=5589e402-f3f8-446a-8495-383cb58b6cb6&quantity=1', { waitUntil: 'networkidle' });
+
+                console.log('[FLOW LOG] Verifying cart screen loaded...');
+                await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', { waitUntil: 'networkidle' });
+
+                await page.waitForTimeout(2000);
+                console.log(`[FLOW LOG] Cart page loaded successfully: ${page.url()}`);
+
+                const successScreenshotPath = `success-cart-loaded-attempt-${attempts}.png`;
+                await page.screenshot({ path: successScreenshotPath, fullPage: true });
+                await sendTelegramAlert(
+                  successScreenshotPath,
+                  `🎉 Success! Flow completed natively on Attempt ${attempts}.\nFinal URL: ${page.url()}`
+                );
+                success = true;
+
+              } catch (err) {
+                if (err.message === 'RETRY_FLOW') {
+                  console.warn(`[WARNING] CAPTCHA detected on attempt ${attempts}. Disconnecting and recycling session...`);
+                } else {
+                  console.error(`[CRITICAL FAILURE] Attempt ${attempts} failed with error: ${err.message}`);
+                  const screenshotPath = `failure-attempt-${attempts}.png`;
+                  await page.screenshot({ path: screenshotPath, fullPage: true });
+                  await sendTelegramAlert(
+                    screenshotPath,
+                    `🚨 Flow failed on attempt ${attempts}!\nURL: ${page.url()}\nError: ${err.message}`
+                  );
+                }
+              } finally {
+                await context.close();
+                await browser.close();
+                console.log(`[FLOW LOG] Session closed for attempt ${attempts}.`);
+              }
+            }
+
+            if (!success) {
+              throw new Error(`Failed to complete flow after ${maxAttempts} attempts.`);
+            }
+          });
+          EOF
+
+          xvfb-run npx playwright test bol-flow.spec.js
