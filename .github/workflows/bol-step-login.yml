@@ -10,7 +10,7 @@ on:
 jobs:
   login:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       BOL_EMAIL: ${{ inputs.bol-email }}
       BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
@@ -19,6 +19,7 @@ jobs:
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DEBUG: pw:api
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -39,18 +40,30 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p screenshots logs traces html-dumps
+
           cat > bol-login.spec.js <<'EOF'
           const { test, expect, chromium, request } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
 
           test('Bol Login', async () => {
-            test.setTimeout(180000);
+            test.setTimeout(240000);
 
             const email = process.env.BOL_EMAIL;
             const password = process.env.BOL_PASSWORD;
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
+
+            function now() {
+              return new Date().toISOString();
+            }
+
+            function logLine(message) {
+              const line = `[${now()}] ${message}`;
+              console.log(line);
+              fs.appendFileSync('logs/login-debug.log', line + '\n');
+            }
 
             async function sendTelegramAlert(filePath, caption) {
               if (!botToken || !chatId) return;
@@ -70,26 +83,139 @@ jobs:
                 });
                 await apiContext.dispose();
               } catch (e) {
-                console.error('Telegram Error:', e.message);
+                logLine(`Telegram Error: ${e.message}`);
               }
             }
 
             async function snap(page, name, caption, fullPage = true) {
               const filePath = `screenshots/${name}.png`;
               fs.mkdirSync('screenshots', { recursive: true });
-              await page.screenshot({ path: filePath, fullPage });
-              await sendTelegramAlert(filePath, caption);
+              try {
+                await page.screenshot({ path: filePath, fullPage });
+                logLine(`Screenshot saved: ${filePath}`);
+                await sendTelegramAlert(filePath, caption);
+              } catch (e) {
+                logLine(`Screenshot failed for ${filePath}: ${e.message}`);
+              }
+            }
+
+            async function dumpHtml(page, name) {
+              const filePath = `html-dumps/${name}.html`;
+              try {
+                const html = await page.content();
+                fs.writeFileSync(filePath, html, 'utf8');
+                logLine(`HTML dumped: ${filePath}`);
+              } catch (e) {
+                logLine(`HTML dump failed for ${filePath}: ${e.message}`);
+              }
+            }
+
+            async function dumpMeta(page, attempt, stage) {
+              try {
+                const meta = {
+                  timestamp: now(),
+                  attempt,
+                  stage,
+                  url: page.url(),
+                  title: await page.title().catch(() => null),
+                  userAgent: await page.evaluate(() => navigator.userAgent).catch(() => null),
+                  online: await page.evaluate(() => navigator.onLine).catch(() => null),
+                };
+                const file = `logs/meta-attempt-${attempt}-${stage}.json`;
+                fs.writeFileSync(file, JSON.stringify(meta, null, 2), 'utf8');
+                logLine(`Meta dumped: ${file}`);
+              } catch (e) {
+                logLine(`Meta dump failed: ${e.message}`);
+              }
+            }
+
+            function attachPageLogging(page, attempt) {
+              page.on('console', msg => {
+                logLine(`[Attempt ${attempt}] PAGE CONSOLE ${msg.type().toUpperCase()}: ${msg.text()}`);
+              });
+
+              page.on('pageerror', err => {
+                logLine(`[Attempt ${attempt}] PAGE ERROR: ${err.message}`);
+              });
+
+              page.on('request', req => {
+                const url = req.url();
+                if (/bol\.com|chrome-error|telegram|ideal|wero|checkout|login/i.test(url)) {
+                  logLine(`[Attempt ${attempt}] REQUEST ${req.method()} ${url}`);
+                }
+              });
+
+              page.on('response', async res => {
+                const url = res.url();
+                if (/bol\.com|chrome-error|checkout|login/i.test(url)) {
+                  logLine(`[Attempt ${attempt}] RESPONSE ${res.status()} ${url}`);
+                }
+              });
+
+              page.on('requestfailed', req => {
+                const failure = req.failure();
+                logLine(`[Attempt ${attempt}] REQUEST FAILED ${req.method()} ${req.url()} :: ${failure ? failure.errorText : 'unknown error'}`);
+              });
+
+              page.on('framenavigated', frame => {
+                if (frame === page.mainFrame()) {
+                  logLine(`[Attempt ${attempt}] MAIN FRAME NAVIGATED TO: ${frame.url()}`);
+                }
+              });
+            }
+
+            async function diagnoseSslError(page, attempt, error) {
+              const message = String(error && error.message ? error.message : error);
+              const currentUrl = (() => {
+                try { return page.url(); } catch { return 'unavailable'; }
+              })();
+
+              logLine(`[Attempt ${attempt}] DIAGNOSE START`);
+              logLine(`[Attempt ${attempt}] Error message: ${message}`);
+              logLine(`[Attempt ${attempt}] Current URL: ${currentUrl}`);
+              logLine(`[Attempt ${attempt}] Proxy server present: ${process.env.PROXY_SERVER ? 'yes' : 'no'}`);
+              if (process.env.PROXY_SERVER) {
+                logLine(`[Attempt ${attempt}] Proxy server value: ${process.env.PROXY_SERVER}`);
+                logLine(`[Attempt ${attempt}] Proxy username present: ${process.env.PROXY_USERNAME ? 'yes' : 'no'}`);
+                logLine(`[Attempt ${attempt}] Proxy password present: ${process.env.PROXY_PASSWORD ? 'yes' : 'no'}`);
+              }
+
+              await dumpMeta(page, attempt, 'ssl-diagnose');
+              await dumpHtml(page, `attempt-${attempt}-ssl-diagnose`);
+              await snap(page, `ssl-diagnose-attempt-${attempt}`, `⚠️ [Step 1][Attempt ${attempt}] SSL/proxy diagnose screen`);
+
+              if (message.includes('ERR_SSL_PROTOCOL_ERROR')) {
+                logLine(`[Attempt ${attempt}] Explicit ERR_SSL_PROTOCOL_ERROR detected`);
+              }
+              if (currentUrl.startsWith('chrome-error://')) {
+                logLine(`[Attempt ${attempt}] Browser is on Chromium internal error page`);
+              }
             }
 
             async function tryLogin(attempt) {
+              logLine(`============================================================`);
+              logLine(`Starting login attempt ${attempt}`);
+              logLine(`BOL_EMAIL present: ${email ? 'yes' : 'no'}`);
+              logLine(`BOL_PASSWORD present: ${password ? 'yes' : 'no'}`);
+              logLine(`PROXY_SERVER present: ${process.env.PROXY_SERVER ? 'yes' : 'no'}`);
+              logLine(`TELEGRAM enabled: ${botToken && chatId ? 'yes' : 'no'}`);
+              logLine(`============================================================`);
+
               const browser = await chromium.launch({
                 headless: true,
-                args: ['--disable-blink-features=AutomationControlled']
+                args: [
+                  '--disable-blink-features=AutomationControlled',
+                  '--disable-dev-shm-usage',
+                  '--no-sandbox',
+                  '--disable-gpu'
+                ]
               });
 
               const context = await browser.newContext({
                 locale: 'nl-NL',
                 viewport: { width: 1366, height: 768 },
+                ignoreHTTPSErrors: false,
+                recordVideo: { dir: 'traces/' },
                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 proxy: process.env.PROXY_SERVER ? {
                   server: process.env.PROXY_SERVER,
@@ -98,82 +224,161 @@ jobs:
                 } : undefined
               });
 
+              await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+
+              context.on('requestfailed', req => {
+                const failure = req.failure();
+                logLine(`[Attempt ${attempt}] CONTEXT REQUEST FAILED ${req.method()} ${req.url()} :: ${failure ? failure.errorText : 'unknown error'}`);
+              });
+
               const page = await context.newPage();
+              attachPageLogging(page, attempt);
+
               page.setDefaultTimeout(30000);
               page.setDefaultNavigationTimeout(60000);
 
               try {
+                logLine(`[Attempt ${attempt}] Navigating to home page`);
                 await page.goto('https://www.bol.com/nl/nl/', {
                   waitUntil: 'domcontentloaded',
                   timeout: 60000
                 });
+
+                logLine(`[Attempt ${attempt}] After goto URL: ${page.url()}`);
+                await dumpMeta(page, attempt, 'after-home-goto');
+                await dumpHtml(page, `attempt-${attempt}-after-home-goto`);
                 await snap(page, `01-home-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Home page loaded`);
 
-                await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
+                if (page.url().startsWith('chrome-error://')) {
+                  throw new Error(`Landed on browser error page immediately after home navigation: ${page.url()}`);
+                }
+
+                const bodyTextHome = await page.locator('body').innerText().catch(() => '');
+                fs.writeFileSync(`logs/body-home-attempt-${attempt}.txt`, bodyTextHome, 'utf8');
+                logLine(`[Attempt ${attempt}] Saved home body text`);
+
+                logLine(`[Attempt ${attempt}] Trying cookie button`);
+                await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click({ timeout: 8000 }).catch(err => {
+                  logLine(`[Attempt ${attempt}] Cookie click skipped/failed: ${err.message}`);
+                });
                 await snap(page, `02-cookies-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Cookies handled`);
 
-                await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
+                logLine(`[Attempt ${attempt}] Searching for login link`);
+                const loginLink = page.getByRole('link', { name: /Inloggen/i }).first();
+                await expect(loginLink).toBeVisible({ timeout: 15000 });
+                await snap(page, `03-before-login-click-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login link visible`);
+
+                await loginLink.click({ force: true });
+                logLine(`[Attempt ${attempt}] Login link clicked, current URL: ${page.url()}`);
+
                 await page.waitForURL(/login/i, { timeout: 30000 });
-                await snap(page, `03-login-page-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login page opened`);
+                logLine(`[Attempt ${attempt}] Reached login page: ${page.url()}`);
 
-                await page.getByRole('textbox', { name: /E-mailadres/i }).fill(email);
-                await snap(page, `04-email-filled-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Email filled`);
+                await dumpMeta(page, attempt, 'login-page');
+                await dumpHtml(page, `attempt-${attempt}-login-page`);
+                await snap(page, `04-login-page-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login page opened`);
 
-                await page.getByRole('textbox', { name: /Wachtwoord/i }).fill(password);
+                const emailBox = page.getByRole('textbox', { name: /E-mailadres/i });
+                const passwordBox = page.getByRole('textbox', { name: /Wachtwoord/i });
+                await expect(emailBox).toBeVisible({ timeout: 15000 });
+                await expect(passwordBox).toBeVisible({ timeout: 15000 });
 
-                await page.getByRole('button', { name: /^Inloggen$/i }).click();
-                await snap(page, `05-login-submitted-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login submitted`);
+                logLine(`[Attempt ${attempt}] Filling email`);
+                await emailBox.fill(email);
+                await snap(page, `05-email-filled-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Email filled`);
 
+                logLine(`[Attempt ${attempt}] Filling password`);
+                await passwordBox.fill(password);
+
+                const loginButton = page.getByRole('button', { name: /^Inloggen$/i });
+                await expect(loginButton).toBeVisible({ timeout: 15000 });
+                await snap(page, `06-before-submit-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Ready to submit login`);
+
+                logLine(`[Attempt ${attempt}] Clicking submit`);
+                await loginButton.click();
+                await snap(page, `07-login-submitted-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login submitted`);
+
+                logLine(`[Attempt ${attempt}] Waiting for post-login URL`);
                 await Promise.race([
                   page.waitForURL('https://www.bol.com/nl/nl/**', { timeout: 45000 }),
                   page.waitForURL('**/account/overzicht**', { timeout: 45000 }),
                   page.waitForURL('**/mijnbol/**', { timeout: 45000 })
                 ]);
 
+                logLine(`[Attempt ${attempt}] Post-login URL reached: ${page.url()}`);
                 await page.waitForTimeout(3000);
-                await snap(page, `06-login-success-attempt-${attempt}`, `✅ [Step 1][Attempt ${attempt}] Login successful`);
 
+                await dumpMeta(page, attempt, 'login-success');
+                await dumpHtml(page, `attempt-${attempt}-login-success`);
+                await snap(page, `08-login-success-attempt-${attempt}`, `✅ [Step 1][Attempt ${attempt}] Login successful`);
+
+                logLine(`[Attempt ${attempt}] Saving storage state`);
                 await context.storageState({ path: 'storage-state.json' });
+
+                logLine(`[Attempt ${attempt}] Stopping trace`);
+                await context.tracing.stop({ path: `traces/login-attempt-${attempt}-success-trace.zip` });
 
                 await context.close();
                 await browser.close();
                 return true;
               } catch (error) {
-                await snap(page, `99-login-error-attempt-${attempt}`, `❌ [Step 1][Attempt ${attempt}] Login failed: ${error.message}`);
-                await context.close().catch(() => {});
-                await browser.close().catch(() => {});
+                const message = String(error && error.message ? error.message : error);
+                logLine(`[Attempt ${attempt}] LOGIN FAILURE: ${message}`);
+
+                await dumpMeta(page, attempt, 'login-error');
+                await dumpHtml(page, `attempt-${attempt}-login-error`);
+                await snap(page, `99-login-error-attempt-${attempt}`, `❌ [Step 1][Attempt ${attempt}] Login failed: ${message}`);
+
+                if (message.includes('ERR_SSL_PROTOCOL_ERROR') || page.url().startsWith('chrome-error://')) {
+                  await diagnoseSslError(page, attempt, error);
+                }
+
+                try {
+                  await context.tracing.stop({ path: `traces/login-attempt-${attempt}-error-trace.zip` });
+                } catch (traceErr) {
+                  logLine(`[Attempt ${attempt}] Trace stop failed: ${traceErr.message}`);
+                }
+
+                await context.close().catch(e => logLine(`[Attempt ${attempt}] Context close error: ${e.message}`));
+                await browser.close().catch(e => logLine(`[Attempt ${attempt}] Browser close error: ${e.message}`));
                 return false;
               }
             }
 
             let success = false;
             const maxAttempts = 3;
+            const backoffs = [5000, 10000, 15000];
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              console.log(`Starting login attempt ${attempt} of ${maxAttempts}`);
+              logLine(`Starting login attempt ${attempt} of ${maxAttempts}`);
               success = await tryLogin(attempt);
-              if (success) break;
+              if (success) {
+                logLine(`Login attempt ${attempt} succeeded`);
+                break;
+              }
 
               if (attempt < maxAttempts) {
-                console.log(`Login attempt ${attempt} failed, retrying...`);
-                await new Promise(resolve => setTimeout(resolve, 5000));
+                logLine(`Login attempt ${attempt} failed, sleeping ${backoffs[attempt - 1]}ms before retry`);
+                await new Promise(resolve => setTimeout(resolve, backoffs[attempt - 1]));
               }
             }
 
             if (!success) {
+              logLine(`All login attempts failed`);
               throw new Error(`Login failed after ${maxAttempts} attempts`);
             }
           });
           EOF
 
-          npx playwright test bol-login.spec.js --reporter=line
+          npx playwright test bol-login.spec.js --reporter=line 2>&1 | tee logs/playwright-run.log
 
       - name: Upload auth state
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bol-auth-state
           path: storage-state.json
-          if-no-files-found: error
+          if-no-files-found: ignore
 
       - name: Upload login screenshots
         if: always()
@@ -181,4 +386,28 @@ jobs:
         with:
           name: bol-login-screenshots
           path: screenshots/
+          if-no-files-found: ignore
+
+      - name: Upload login logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-login-logs
+          path: logs/
+          if-no-files-found: ignore
+
+      - name: Upload login traces and videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-login-traces
+          path: traces/
+          if-no-files-found: ignore
+
+      - name: Upload login HTML dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-login-html-dumps
+          path: html-dumps/
           if-no-files-found: ignore
