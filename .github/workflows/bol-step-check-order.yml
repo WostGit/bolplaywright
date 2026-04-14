@@ -1,4 +1,4 @@
-name: Bol - Step 4: Check / Verify Order
+name: "Bol - Step 4: Check / Verify Order"
 
 on:
   workflow_call:
