@@ -1,4 +1,4 @@
-name: Bol - Step 1: Login
+name: "Bol - Step 1: Login"
 
 on:
   workflow_call:
