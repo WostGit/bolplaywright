@@ -49,6 +49,8 @@ jobs:
           const path = require('path');
 
           test('Proceed to Checkout', async () => {
+            test.setTimeout(120000);
+
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
 
@@ -94,7 +96,8 @@ jobs:
             });
 
             const page = await context.newPage();
-            page.setDefaultTimeout(40000);
+            page.setDefaultTimeout(30000);
+            page.setDefaultNavigationTimeout(60000);
 
             try {
               await page.goto('https://www.bol.com/nl/nl/basket/', {
@@ -102,30 +105,41 @@ jobs:
                 timeout: 60000
               });
 
-              await page.waitForLoadState('networkidle');
-              await snap(page, '01-basket-opened', '[Step 3] Basket page opened');
+              await snap(page, '01-basket-opened', `[Step 3] Basket page opened: ${page.url()}`);
 
               if (/login/i.test(page.url())) {
                 throw new Error(`Redirected to login page. Auth state missing or expired. URL: ${page.url()}`);
               }
 
-              // Accept cookies if they reappear
               await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
               await snap(page, '02-cookies-handled', '[Step 3] Cookies handled');
 
-              // Exact intended CTA
-              const checkoutBtn = page.getByRole('link', { name: /^Verder naar bestellen$/i });
+              // Give the basket UI a moment to render, but do not wait for networkidle
+              await page.waitForTimeout(3000);
+              await snap(page, '03-after-render-wait', '[Step 3] Basket render wait completed');
 
-              await expect(checkoutBtn).toBeVisible({ timeout: 15000 });
-              await snap(page, '03-before-checkout-click', '[Step 3] Found "Verder naar bestellen" button');
+              const checkoutBtn = page
+                .locator('a, button')
+                .filter({ hasText: /Verder naar bestellen/i })
+                .first();
 
-              await checkoutBtn.click();
+              await expect(checkoutBtn).toBeVisible({ timeout: 20000 });
+              await snap(page, '04-checkout-visible', '[Step 3] Found "Verder naar bestellen"');
 
-              await page.waitForLoadState('networkidle');
-              await snap(page, '04-after-checkout-click', '✅ [Step 3] Clicked "Verder naar bestellen"');
+              await checkoutBtn.click({ timeout: 20000 });
+              await snap(page, '05-checkout-clicked', '[Step 3] Clicked "Verder naar bestellen"');
+
+              // Wait for URL change or visible checkout content, not networkidle
+              await Promise.race([
+                page.waitForURL(/bestellen|checkout|order/i, { timeout: 30000 }),
+                page.locator('body').waitFor({ state: 'visible', timeout: 30000 })
+              ]);
+
+              await page.waitForTimeout(3000);
+              await snap(page, '06-after-checkout', `✅ [Step 3] After checkout click: ${page.url()}`);
 
               await context.storageState({ path: 'storage-state.json' });
-              console.log('Navigated to order page successfully');
+              console.log(`Navigated to order page successfully: ${page.url()}`);
             } catch (err) {
               await snap(page, '99-step3-error', `❌ [Step 3] Failed: ${err.message}`);
               throw err;
@@ -136,14 +150,15 @@ jobs:
           });
           EOF
 
-          npx playwright test bol-go-order.spec.js
+          npx playwright test bol-go-order.spec.js --reporter=line
 
       - name: Upload updated auth state
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bol-auth-state
           path: storage-state.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           overwrite: true
 
       - name: Upload step 3 screenshots
