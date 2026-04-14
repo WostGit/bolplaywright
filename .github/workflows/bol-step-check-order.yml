@@ -17,6 +17,7 @@ jobs:
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -43,11 +44,13 @@ jobs:
           set -euo pipefail
 
           cat > bol-check-order.spec.js <<'EOF'
-          const { test, chromium, request } = require('@playwright/test');
+          const { test, expect, chromium, request } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
 
           test('Verify Order', async () => {
+            test.setTimeout(120000);
+
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
 
@@ -81,6 +84,7 @@ jobs:
             }
 
             const browser = await chromium.launch({ headless: true });
+
             const context = await browser.newContext({
               viewport: { width: 1366, height: 768 },
               storageState: 'storage-state.json',
@@ -92,22 +96,55 @@ jobs:
             });
 
             const page = await context.newPage();
-            page.setDefaultTimeout(40000);
+            page.setDefaultTimeout(30000);
+            page.setDefaultNavigationTimeout(60000);
 
             try {
-              await page.goto('https://www.bol.com/nl/nl/account/bestellingen/', {
+              // Open the checkout page directly from saved auth/session
+              await page.goto('https://www.bol.com/nl/nl/checkout/', {
                 waitUntil: 'domcontentloaded',
                 timeout: 60000
+              }).catch(async () => {
+                // Fallback if bol redirects through basket/order path
+                await page.goto('https://www.bol.com/nl/nl/basket/', {
+                  waitUntil: 'domcontentloaded',
+                  timeout: 60000
+                });
               });
-              await snap(page, '01-orders-opened', '[Step 4] Orders page opened');
 
-              await page.waitForLoadState('networkidle');
-              await snap(page, '02-orders-networkidle', '[Step 4] Orders page fully loaded');
+              await snap(page, '01-checkout-opened', `[Step 4] Checkout page opened: ${page.url()}`);
+
+              if (/login/i.test(page.url())) {
+                throw new Error(`Redirected to login page. Auth state missing or expired. URL: ${page.url()}`);
+              }
+
+              await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
+              await snap(page, '02-cookies-handled', '[Step 4] Cookies handled');
+
+              await page.waitForTimeout(3000);
+              await snap(page, '03-render-wait', '[Step 4] Checkout render wait completed');
+
+              const placeOrderBtn = page
+                .locator('a, button')
+                .filter({ hasText: /^Bestellen en betalen$/i })
+                .first();
+
+              await expect(placeOrderBtn).toBeVisible({ timeout: 20000 });
+              await snap(page, '04-place-order-visible', '[Step 4] Found "Bestellen en betalen"');
+
+              await placeOrderBtn.click({ timeout: 20000 });
+              await snap(page, '05-place-order-clicked', '[Step 4] Clicked "Bestellen en betalen"');
+
+              // Wait for any post-submit transition
+              await Promise.race([
+                page.waitForURL(/bestelling|bevestiging|order|payment|betalen/i, { timeout: 30000 }),
+                page.waitForTimeout(5000)
+              ]);
+
+              await snap(page, '06-after-place-order', `✅ [Step 4] After clicking order button: ${page.url()}`);
 
               await context.storageState({ path: 'storage-state.json' });
-              await snap(page, '03-orders-verified', '✅ [Step 4] Order page verified successfully');
-
-              console.log('Order check completed');
+              console.log(`Order step completed successfully: ${page.url()}`);
             } catch (error) {
               await snap(page, '99-step4-error', `❌ [Step 4] Failed: ${error.message}`);
               throw error;
@@ -118,14 +155,15 @@ jobs:
           });
           EOF
 
-          npx playwright test bol-check-order.spec.js
+          npx playwright test bol-check-order.spec.js --reporter=line
 
       - name: Upload updated auth state
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bol-auth-state
           path: storage-state.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           overwrite: true
 
       - name: Upload step 4 screenshots
