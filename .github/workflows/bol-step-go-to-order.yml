@@ -21,6 +21,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Download auth state
+        uses: actions/download-artifact@v4
+        with:
+          name: bol-auth-state
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -28,20 +33,17 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          npm init -y
           npm install @playwright/test
-          # --with-deps is CRITICAL for non-headless mode on Ubuntu runners
           npx playwright install --with-deps chromium
 
       - name: Execute Go to Order Step
         shell: bash
         run: |
           set -euo pipefail
-          echo "================================================================="
-          echo " STEP 3: GO TO ORDER / CHECKOUT (HEADED MODE)"
-          echo "================================================================="
 
           cat > bol-go-order.spec.js <<'EOF'
-          const { test, chromium } = require('@playwright/test');
+          const { test, expect, chromium, request } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
 
@@ -52,64 +54,81 @@ jobs:
             async function sendTelegramAlert(filePath, caption) {
               if (!botToken || !chatId) return;
               try {
-                const { request } = require('@playwright/test');
                 const apiContext = await request.newContext();
                 const buffer = fs.readFileSync(filePath);
                 await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
                   multipart: {
                     chat_id: chatId,
-                    caption: caption,
+                    caption,
                     photo: {
                       name: path.basename(filePath),
                       mimeType: 'image/png',
-                      buffer: buffer
+                      buffer
                     }
                   }
                 });
+                await apiContext.dispose();
               } catch (e) {
                 console.error('Telegram Error:', e.message);
               }
             }
 
-            // RUNNING IN HEADED MODE
-            const browser = await chromium.launch({ 
-              headless: false 
-            });
+            async function snap(page, name, caption, fullPage = true) {
+              const filePath = `screenshots/${name}.png`;
+              fs.mkdirSync('screenshots', { recursive: true });
+              await page.screenshot({ path: filePath, fullPage });
+              await sendTelegramAlert(filePath, caption);
+            }
+
+            const browser = await chromium.launch({ headless: true });
 
             const context = await browser.newContext({
-              viewport: { width: 1280, height: 720 },
-              proxy: {
+              viewport: { width: 1366, height: 768 },
+              storageState: 'storage-state.json',
+              proxy: process.env.PROXY_SERVER ? {
                 server: process.env.PROXY_SERVER,
                 username: process.env.PROXY_USERNAME,
                 password: process.env.PROXY_PASSWORD
-              }
+              } : undefined
             });
 
             const page = await context.newPage();
+            page.setDefaultTimeout(40000);
 
             try {
-              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', { 
-                waitUntil: 'domcontentloaded', 
-                timeout: 60000 
+              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
               });
+              await page.waitForLoadState('networkidle');
+              await snap(page, '01-cart-opened', '[Step 3] Cart opened');
 
-              // Click the checkout button
-              // Bol often has multiple buttons; we target the primary checkout link
-              const checkoutBtn = page.getByRole('link', { name: /Naar bestellen|Bestellen|Doorgaan/i }).first();
-              await checkoutBtn.waitFor({ state: 'visible' });
-              await checkoutBtn.click();
+              if (/login/i.test(page.url())) {
+                throw new Error(`Redirected to login page. Auth state missing or expired. URL: ${page.url()}`);
+              }
+
+              await snap(page, '02-before-checkout', '[Step 3] Looking for checkout button');
+
+              const exactCheckout = page.getByRole('link', { name: /^Naar bestellen$/i });
+
+              if (await exactCheckout.count()) {
+                await expect(exactCheckout.first()).toBeVisible();
+                await exactCheckout.first().click();
+              } else {
+                const fallback = page.locator('a').filter({ hasText: /^Naar bestellen$/i }).first();
+                await expect(fallback).toBeVisible();
+                await fallback.click();
+              }
+
+              await snap(page, '03-checkout-clicked', '[Step 3] Checkout button clicked');
 
               await page.waitForLoadState('networkidle');
+              await snap(page, '04-checkout-page', '✅ [Step 3] Reached checkout / order page');
 
-              const screenshotPath = 'checkout-page.png';
-              await page.screenshot({ path: screenshotPath, fullPage: true });
-              await sendTelegramAlert(screenshotPath, '✅ Reached Checkout / Order page (Headed)');
-
+              await context.storageState({ path: 'storage-state.json' });
               console.log('Navigated to order page successfully');
             } catch (err) {
-              console.error('Test failed:', err.message);
-              // Take error screenshot
-              await page.screenshot({ path: 'error.png' });
+              await snap(page, '99-step3-error', `❌ [Step 3] Failed: ${err.message}`);
               throw err;
             } finally {
               await context.close();
@@ -118,5 +137,20 @@ jobs:
           });
           EOF
 
-          # xvfb-run provides the virtual display for headless: false to work
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npx playwright test bol-go-order.spec.js
+          npx playwright test bol-go-order.spec.js
+
+      - name: Upload updated auth state
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-auth-state
+          path: storage-state.json
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload step 3 screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-step3-screenshots
+          path: screenshots/
+          if-no-files-found: ignore
