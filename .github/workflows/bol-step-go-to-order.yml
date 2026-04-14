@@ -26,12 +26,18 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install Dependencies
+        run: |
+          npm install @playwright/test
+          # --with-deps is CRITICAL for non-headless mode on Ubuntu runners
+          npx playwright install --with-deps chromium
+
       - name: Execute Go to Order Step
         shell: bash
         run: |
           set -euo pipefail
           echo "================================================================="
-          echo " STEP 3: GO TO ORDER / CHECKOUT"
+          echo " STEP 3: GO TO ORDER / CHECKOUT (HEADED MODE)"
           echo "================================================================="
 
           cat > bol-go-order.spec.js <<'EOF'
@@ -61,33 +67,50 @@ jobs:
                   }
                 });
               } catch (e) {
-                console.error(e.message);
+                console.error('Telegram Error:', e.message);
               }
             }
 
-            const browser = await chromium.launch({ headless: false });
+            // RUNNING IN HEADED MODE
+            const browser = await chromium.launch({ 
+              headless: false 
+            });
+
             const context = await browser.newContext({
+              viewport: { width: 1280, height: 720 },
               proxy: {
                 server: process.env.PROXY_SERVER,
                 username: process.env.PROXY_USERNAME,
                 password: process.env.PROXY_PASSWORD
               }
             });
+
             const page = await context.newPage();
 
             try {
-              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/');
+              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', { 
+                waitUntil: 'domcontentloaded', 
+                timeout: 60000 
+              });
 
               // Click the checkout button
-              await page.getByRole('link', { name: /Naar bestellen|Bestellen|Doorgaan/i }).first().click({ force: true });
+              // Bol often has multiple buttons; we target the primary checkout link
+              const checkoutBtn = page.getByRole('link', { name: /Naar bestellen|Bestellen|Doorgaan/i }).first();
+              await checkoutBtn.waitFor({ state: 'visible' });
+              await checkoutBtn.click();
 
               await page.waitForLoadState('networkidle');
 
               const screenshotPath = 'checkout-page.png';
               await page.screenshot({ path: screenshotPath, fullPage: true });
-              await sendTelegramAlert(screenshotPath, '✅ Reached Checkout / Order page');
+              await sendTelegramAlert(screenshotPath, '✅ Reached Checkout / Order page (Headed)');
 
               console.log('Navigated to order page successfully');
+            } catch (err) {
+              console.error('Test failed:', err.message);
+              // Take error screenshot
+              await page.screenshot({ path: 'error.png' });
+              throw err;
             } finally {
               await context.close();
               await browser.close();
@@ -95,4 +118,5 @@ jobs:
           });
           EOF
 
-          xvfb-run npx playwright test bol-go-order.spec.js
+          # xvfb-run provides the virtual display for headless: false to work
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npx playwright test bol-go-order.spec.js
