@@ -20,6 +20,7 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       DEBUG: pw:api
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -30,10 +31,30 @@ jobs:
           node-version: 20
 
       - name: Install Dependencies and Browsers
+        shell: bash
         run: |
+          set -euo pipefail
           npm init -y
           npm install @playwright/test
           npx playwright install --with-deps chromium
+
+      - name: Proxy curl health check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "============================================================"
+          echo "PROXY CURL HEALTH CHECK"
+          echo "============================================================"
+          echo "PROXY_SERVER present: $([ -n "${PROXY_SERVER:-}" ] && echo yes || echo no)"
+          echo "PROXY_USERNAME present: $([ -n "${PROXY_USERNAME:-}" ] && echo yes || echo no)"
+          echo "PROXY_PASSWORD present: $([ -n "${PROXY_PASSWORD:-}" ] && echo yes || echo no)"
+
+          curl -v \
+            --proxy "${PROXY_SERVER}" \
+            --proxy-user "${PROXY_USERNAME}:${PROXY_PASSWORD}" \
+            --max-time 40 \
+            https://example.com > /tmp/proxy-healthcheck-example.html
 
       - name: Execute Login Step
         shell: bash
@@ -54,21 +75,17 @@ jobs:
             const password = process.env.BOL_PASSWORD;
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
-
-            const rawProxy = process.env.PROXY_SERVER?.trim();
+            const proxyServer = process.env.PROXY_SERVER?.trim();
 
             function normalizeProxyServer(proxyValue) {
               if (!proxyValue) return undefined;
-              if (proxyValue.startsWith('https://')) {
-                return 'http://' + proxyValue.slice('https://'.length);
-              }
-              if (proxyValue.startsWith('http://') || proxyValue.startsWith('socks5://')) {
+              if (/^[a-zA-Z]+:\/\//.test(proxyValue)) {
                 return proxyValue;
               }
-              return `http://${proxyValue}`;
+              return `https://${proxyValue}`;
             }
 
-            const normalizedProxy = normalizeProxyServer(rawProxy);
+            const normalizedProxy = normalizeProxyServer(proxyServer);
 
             function now() {
               return new Date().toISOString();
@@ -133,8 +150,8 @@ jobs:
                   stage,
                   url: page.url(),
                   title: await page.title().catch(() => null),
-                  normalizedProxyPresent: !!normalizedProxy,
-                  normalizedProxyScheme: normalizedProxy ? normalizedProxy.split('://')[0] : null
+                  proxyPresent: !!normalizedProxy,
+                  proxyScheme: normalizedProxy ? normalizedProxy.split('://')[0] : null
                 };
                 const file = `logs/meta-attempt-${attempt}-${stage}.json`;
                 fs.writeFileSync(file, JSON.stringify(meta, null, 2), 'utf8');
@@ -192,15 +209,61 @@ jobs:
               }
             }
 
+            async function detectPostLoginOutcome(page, attempt) {
+              logLine(`[Attempt ${attempt}] Monitoring post-login outcome`);
+
+              const outcome = await Promise.race([
+                page.waitForURL(/account|mijnbol|overzicht|bestellen|checkout/i, { timeout: 45000 })
+                  .then(() => 'success-url'),
+
+                page.locator('text=/captcha|beveiligingscontrole|verify|verificatie|robot/i')
+                  .waitFor({ timeout: 45000 })
+                  .then(() => 'captcha')
+                  .catch(() => null),
+
+                page.locator('text=/mijn account|accountoverzicht|bestellingen/i')
+                  .waitFor({ timeout: 45000 })
+                  .then(() => 'success-content')
+                  .catch(() => null),
+
+                page.locator('text=/inloggen mislukt|onjuiste|probeer opnieuw|wachtwoord|e-mailadres/i')
+                  .waitFor({ timeout: 45000 })
+                  .then(() => 'login-page-still-visible')
+                  .catch(() => null)
+              ]);
+
+              logLine(`[Attempt ${attempt}] Post-login outcome: ${outcome || 'unknown'}`);
+              logLine(`[Attempt ${attempt}] Current URL after submit: ${page.url()}`);
+
+              await dumpMeta(page, attempt, 'post-login-outcome');
+              await dumpHtml(page, `attempt-${attempt}-post-login-outcome`);
+              await snap(page, `06-post-login-outcome-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Post-login outcome: ${outcome || 'unknown'} | URL: ${page.url()}`);
+
+              if (outcome === 'captcha') {
+                throw new Error(`CAPTCHA or verification detected after login. URL: ${page.url()}`);
+              }
+
+              if (outcome === 'login-page-still-visible') {
+                throw new Error(`Still on login page after submit. URL: ${page.url()}`);
+              }
+
+              if (!outcome) {
+                throw new Error(`No post-login outcome detected within timeout. URL: ${page.url()}`);
+              }
+
+              return outcome;
+            }
+
             async function tryLogin(attempt) {
               logLine(`============================================================`);
               logLine(`Starting login attempt ${attempt}`);
               logLine(`BOL_EMAIL present: ${email ? 'yes' : 'no'}`);
               logLine(`BOL_PASSWORD present: ${password ? 'yes' : 'no'}`);
-              logLine(`RAW PROXY present: ${rawProxy ? 'yes' : 'no'}`);
-              logLine(`NORMALIZED PROXY present: ${normalizedProxy ? 'yes' : 'no'}`);
+              logLine(`PROXY_SERVER present: ${proxyServer ? 'yes' : 'no'}`);
+              logLine(`PROXY_USERNAME present: ${process.env.PROXY_USERNAME ? 'yes' : 'no'}`);
+              logLine(`PROXY_PASSWORD present: ${process.env.PROXY_PASSWORD ? 'yes' : 'no'}`);
               if (normalizedProxy) {
-                logLine(`NORMALIZED PROXY scheme: ${normalizedProxy.split('://')[0]}`);
+                logLine(`PROXY scheme: ${normalizedProxy.split('://')[0]}`);
               }
               logLine(`TELEGRAM enabled: ${botToken && chatId ? 'yes' : 'no'}`);
               logLine(`============================================================`);
@@ -215,16 +278,13 @@ jobs:
                 ]
               });
 
-              const useProxy = attempt < 3;
-              logLine(`[Attempt ${attempt}] Using proxy this attempt: ${useProxy ? 'yes' : 'no'}`);
-
               const context = await browser.newContext({
                 locale: 'nl-NL',
                 viewport: { width: 1366, height: 768 },
                 ignoreHTTPSErrors: false,
                 recordVideo: { dir: 'traces/' },
                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                proxy: useProxy && normalizedProxy ? {
+                proxy: normalizedProxy ? {
                   server: normalizedProxy,
                   username: process.env.PROXY_USERNAME,
                   password: process.env.PROXY_PASSWORD
@@ -253,7 +313,7 @@ jobs:
                 await snap(page, `01-home-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Home page loaded`);
 
                 if (page.url().startsWith('chrome-error://')) {
-                  throw new Error(`Landed on browser error page immediately after home navigation: ${page.url()}`);
+                  throw new Error(`Landed on browser error page after home navigation: ${page.url()}`);
                 }
 
                 await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
@@ -270,6 +330,7 @@ jobs:
 
                 const emailBox = page.getByRole('textbox', { name: /E-mailadres/i });
                 const passwordBox = page.getByRole('textbox', { name: /Wachtwoord/i });
+
                 await expect(emailBox).toBeVisible({ timeout: 15000 });
                 await expect(passwordBox).toBeVisible({ timeout: 15000 });
 
@@ -277,22 +338,19 @@ jobs:
                 await snap(page, `04-email-filled-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Email filled`);
 
                 await passwordBox.fill(password);
+                await snap(page, `05-password-filled-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Password filled`);
 
                 const loginButton = page.getByRole('button', { name: /^Inloggen$/i });
                 await expect(loginButton).toBeVisible({ timeout: 15000 });
                 await loginButton.click();
-                await snap(page, `05-login-submitted-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login submitted`);
+                await snap(page, `06-login-submitted-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login submitted`);
 
-                await Promise.race([
-                  page.waitForURL('https://www.bol.com/nl/nl/**', { timeout: 45000 }),
-                  page.waitForURL('**/account/overzicht**', { timeout: 45000 }),
-                  page.waitForURL('**/mijnbol/**', { timeout: 45000 })
-                ]);
+                await detectPostLoginOutcome(page, attempt);
 
                 await page.waitForTimeout(3000);
                 await dumpMeta(page, attempt, 'login-success');
                 await dumpHtml(page, `attempt-${attempt}-login-success`);
-                await snap(page, `06-login-success-attempt-${attempt}`, `✅ [Step 1][Attempt ${attempt}] Login successful`);
+                await snap(page, `07-login-success-attempt-${attempt}`, `✅ [Step 1][Attempt ${attempt}] Login successful`);
 
                 await context.storageState({ path: 'storage-state.json' });
                 await context.tracing.stop({ path: `traces/login-attempt-${attempt}-success-trace.zip` });
