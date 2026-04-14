@@ -166,6 +166,45 @@ jobs:
               return enabledBudbeeButtons;
             }
 
+            async function confirmBudbeeSelected(page, selectedText, attempt) {
+              const deliverySection = page.locator('#section-delivery-or-billing-locations').first();
+              await expect(deliverySection).toBeVisible({ timeout: 20000 });
+
+              const normalizedSelected = selectedText.replace(/\s+/g, ' ').trim();
+
+              const confirmed = await expect.poll(
+                async () => {
+                  const dialogStillOpen = await page.locator('[role="dialog"]').isVisible().catch(() => false);
+
+                  const sectionText = await deliverySection.innerText().catch(() => '');
+                  const normalizedSection = sectionText.replace(/\s+/g, ' ').trim();
+
+                  const hasBudbeeId = /BUNUR/i.test(await page.content().catch(() => ''));
+                  const containsSelectedPickup =
+                    normalizedSelected.length > 0 && normalizedSection.includes(normalizedSelected);
+
+                  const looksLikePickupSelected =
+                    /haal je pakket op|afhaalpunt/i.test(normalizedSection);
+
+                  return !dialogStillOpen && (containsSelectedPickup || (looksLikePickupSelected && hasBudbeeId));
+                },
+                {
+                  timeout: 25000,
+                  intervals: [1000, 1500, 2000, 2500]
+                }
+              ).toBeTruthy().then(() => true).catch(() => false);
+
+              await snap(
+                page,
+                `10-budbee-confirm-check-${attempt}`,
+                confirmed
+                  ? `✅ [Step 4][Attempt ${attempt}] Budbee confirmed`
+                  : `❌ [Step 4][Attempt ${attempt}] Budbee not confirmed`
+              );
+
+              return confirmed;
+            }
+
             async function trySelectBudbee(attempt) {
               const browser = await chromium.launch({ headless: true });
 
@@ -211,7 +250,12 @@ jobs:
                 await firstBudbee.click({ timeout: 15000 });
                 await page.waitForTimeout(3000);
 
-                await snap(page, `09-budbee-selected-${attempt}`, `✅ [Step 4][Attempt ${attempt}] Selected Budbee option: ${firstBudbeeText}`);
+                await snap(page, `09-budbee-clicked-${attempt}`, `[Step 4][Attempt ${attempt}] Clicked Budbee option: ${firstBudbeeText}`);
+
+                const confirmed = await confirmBudbeeSelected(page, firstBudbeeText, attempt);
+                if (!confirmed) {
+                  throw new Error(`Budbee option was clicked but not confirmed on the checkout page`);
+                }
 
                 await context.storageState({ path: 'storage-state.json' });
 
