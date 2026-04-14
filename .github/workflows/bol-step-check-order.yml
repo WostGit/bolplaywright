@@ -12,27 +12,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Download auth state
+        uses: actions/download-artifact@v4
+        with:
+          name: bol-auth-state
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
+      - name: Install Dependencies
+        run: |
+          npm init -y
+          npm install @playwright/test
+          npx playwright install --with-deps chromium
+
       - name: Execute Check Order Step
         shell: bash
         run: |
           set -euo pipefail
-          echo "================================================================="
-          echo " STEP 4: CHECK / VERIFY ORDER"
-          echo "================================================================="
 
           cat > bol-check-order.spec.js <<'EOF'
-          const { test, chromium } = require('@playwright/test');
+          const { test, chromium, request } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
 
@@ -43,38 +54,63 @@ jobs:
             async function sendTelegramAlert(filePath, caption) {
               if (!botToken || !chatId) return;
               try {
-                const { request } = require('@playwright/test');
                 const apiContext = await request.newContext();
                 const buffer = fs.readFileSync(filePath);
                 await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
                   multipart: {
                     chat_id: chatId,
-                    caption: caption,
+                    caption,
                     photo: {
                       name: path.basename(filePath),
                       mimeType: 'image/png',
-                      buffer: buffer
+                      buffer
                     }
                   }
                 });
+                await apiContext.dispose();
               } catch (e) {
-                console.error(e.message);
+                console.error('Telegram Error:', e.message);
               }
             }
 
-            const browser = await chromium.launch({ headless: false });
-            const context = await browser.newContext();
+            async function snap(page, name, caption, fullPage = true) {
+              const filePath = `screenshots/${name}.png`;
+              fs.mkdirSync('screenshots', { recursive: true });
+              await page.screenshot({ path: filePath, fullPage });
+              await sendTelegramAlert(filePath, caption);
+            }
+
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({
+              viewport: { width: 1366, height: 768 },
+              storageState: 'storage-state.json',
+              proxy: process.env.PROXY_SERVER ? {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              } : undefined
+            });
+
             const page = await context.newPage();
+            page.setDefaultTimeout(40000);
 
             try {
-              await page.goto('https://www.bol.com/nl/nl/account/bestellingen/');
-              await page.waitForLoadState('networkidle');
+              await page.goto('https://www.bol.com/nl/nl/account/bestellingen/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+              });
+              await snap(page, '01-orders-opened', '[Step 4] Orders page opened');
 
-              const screenshotPath = 'order-verified.png';
-              await page.screenshot({ path: screenshotPath, fullPage: true });
-              await sendTelegramAlert(screenshotPath, '✅ Order verified successfully');
+              await page.waitForLoadState('networkidle');
+              await snap(page, '02-orders-networkidle', '[Step 4] Orders page fully loaded');
+
+              await context.storageState({ path: 'storage-state.json' });
+              await snap(page, '03-orders-verified', '✅ [Step 4] Order page verified successfully');
 
               console.log('Order check completed');
+            } catch (error) {
+              await snap(page, '99-step4-error', `❌ [Step 4] Failed: ${error.message}`);
+              throw error;
             } finally {
               await context.close();
               await browser.close();
@@ -82,4 +118,20 @@ jobs:
           });
           EOF
 
-          xvfb-run npx playwright test bol-check-order.spec.js
+          npx playwright test bol-check-order.spec.js
+
+      - name: Upload updated auth state
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-auth-state
+          path: storage-state.json
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload step 4 screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-step4-screenshots
+          path: screenshots/
+          if-no-files-found: ignore
