@@ -20,8 +20,11 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
@@ -54,18 +57,33 @@ jobs:
                   multipart: {
                     chat_id: chatId,
                     caption: caption,
-                    photo: { name: path.basename(filePath), mimeType: 'image/png', buffer }
+                    photo: {
+                      name: path.basename(filePath),
+                      mimeType: 'image/png',
+                      buffer: buffer
+                    }
                   }
                 });
-              } catch (e) { console.error(e.message); }
+              } catch (e) {
+                console.error(e.message);
+              }
             }
 
-            const browser = await chromium.launch({ headless: false, args: ['--disable-blink-features=AutomationControlled'] });
+            const browser = await chromium.launch({ 
+              headless: false, 
+              args: ['--disable-blink-features=AutomationControlled'] 
+            });
+            
             const context = await browser.newContext({
               locale: 'nl-NL',
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              proxy: { server: process.env.PROXY_SERVER, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD }
+              proxy: {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              }
             });
+            
             const page = await context.newPage();
             page.setDefaultTimeout(40000);
 
@@ -92,6 +110,7 @@ jobs:
               await page.waitForLoadState('networkidle');
               await page.screenshot({ path: 'login-success.png' });
               await sendTelegramAlert('login-success.png', '✅ Login Successful');
+
               console.log('Login completed successfully');
             } finally {
               await context.close();
