@@ -68,7 +68,6 @@ jobs:
 
             try {
               await page.goto('https://www.bol.com/nl/nl/account/bestellingen/');
-
               await page.waitForLoadState('networkidle');
 
               const screenshotPath = 'order-verified.png';
