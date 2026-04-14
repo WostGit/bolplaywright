@@ -10,7 +10,7 @@ on:
 jobs:
   check-order:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
@@ -49,7 +49,7 @@ jobs:
           const path = require('path');
 
           test('Select Budbee delivery option', async () => {
-            test.setTimeout(120000);
+            test.setTimeout(180000);
 
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -79,97 +79,146 @@ jobs:
             async function snap(page, name, caption, fullPage = true) {
               const filePath = `screenshots/${name}.png`;
               fs.mkdirSync('screenshots', { recursive: true });
-              await page.screenshot({ path: filePath, fullPage });
-              await sendTelegramAlert(filePath, caption);
+              await page.screenshot({ path: filePath, fullPage }).catch(() => {});
+              if (fs.existsSync(filePath)) {
+                await sendTelegramAlert(filePath, caption);
+              }
             }
 
-            const browser = await chromium.launch({ headless: true });
+            async function openCheckoutLikePage(page, attempt) {
+              const urls = [
+                'https://www.bol.com/nl/nl/checkout/',
+                'https://www.bol.com/nl/nl/basket/',
+                'https://www.bol.com/nl/nl/winkelwagentje/'
+              ];
 
-            const context = await browser.newContext({
-              viewport: { width: 1366, height: 768 },
-              storageState: 'storage-state.json',
-              proxy: process.env.PROXY_SERVER ? {
-                server: process.env.PROXY_SERVER,
-                username: process.env.PROXY_USERNAME,
-                password: process.env.PROXY_PASSWORD
-              } : undefined
-            });
+              let lastError = null;
 
-            const page = await context.newPage();
-            page.setDefaultTimeout(30000);
-            page.setDefaultNavigationTimeout(60000);
+              for (const url of urls) {
+                try {
+                  console.log(`[Attempt ${attempt}] Navigating to ${url}`);
+                  await page.goto(url, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 60000
+                  });
 
-            try {
-              await page.goto('https://www.bol.com/nl/nl/checkout/', {
-                waitUntil: 'domcontentloaded',
-                timeout: 60000
-              }).catch(async () => {
-                await page.goto('https://www.bol.com/nl/nl/basket/', {
-                  waitUntil: 'domcontentloaded',
-                  timeout: 60000
-                });
+                  await page.waitForTimeout(3000);
+                  await snap(page, `01-open-${attempt}-${Buffer.from(url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0,20)}`, `[Step 4][Attempt ${attempt}] Opened ${page.url()}`);
+
+                  const currentUrl = page.url();
+
+                  if (currentUrl.startsWith('chrome-error://')) {
+                    throw new Error(`Chromium error page reached from ${url}`);
+                  }
+
+                  if (/login/i.test(currentUrl)) {
+                    throw new Error(`Redirected to login page from ${url}: ${currentUrl}`);
+                  }
+
+                  return currentUrl;
+                } catch (err) {
+                  lastError = err;
+                  console.error(`[Attempt ${attempt}] Failed opening ${url}: ${err.message}`);
+                  await snap(page, `02-open-failed-${attempt}`, `[Step 4][Attempt ${attempt}] Failed opening ${url}: ${err.message}`);
+                }
+              }
+
+              throw lastError || new Error('Could not open any checkout-related page');
+            }
+
+            async function trySelectBudbee(attempt) {
+              const browser = await chromium.launch({ headless: true });
+
+              const context = await browser.newContext({
+                viewport: { width: 1366, height: 768 },
+                storageState: 'storage-state.json',
+                proxy: process.env.PROXY_SERVER ? {
+                  server: process.env.PROXY_SERVER,
+                  username: process.env.PROXY_USERNAME,
+                  password: process.env.PROXY_PASSWORD
+                } : undefined
               });
 
-              await snap(page, '01-checkout-opened', `[Step 4] Checkout opened: ${page.url()}`);
+              const page = await context.newPage();
+              page.setDefaultTimeout(30000);
+              page.setDefaultNavigationTimeout(60000);
 
-              if (/login/i.test(page.url())) {
-                throw new Error(`Redirected to login page. Auth state missing or expired. URL: ${page.url()}`);
+              try {
+                const openedUrl = await openCheckoutLikePage(page, attempt);
+                await snap(page, `03-checkout-opened-attempt-${attempt}`, `[Step 4][Attempt ${attempt}] Ready at ${openedUrl}`);
+
+                await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
+                await snap(page, `04-cookies-attempt-${attempt}`, `[Step 4][Attempt ${attempt}] Cookies handled`);
+
+                const otherAddressBtn = page.getByRole('button', { name: /^Ander bezorgadres of afhaalpunt$/i });
+                await expect(otherAddressBtn).toBeVisible({ timeout: 20000 });
+                await otherAddressBtn.click();
+                await snap(page, `05-dialog-opened-attempt-${attempt}`, `[Step 4][Attempt ${attempt}] Opened delivery-point dialog`);
+
+                const dialog = page.locator('[role="dialog"]').filter({ hasText: /Je bezorgadressen/i }).first();
+                await expect(dialog).toBeVisible({ timeout: 20000 });
+
+                const pickupTab = dialog.getByRole('tab', { name: /^Afhaalpunten$/i });
+                await expect(pickupTab).toBeVisible({ timeout: 10000 });
+
+                const selected = await pickupTab.getAttribute('aria-selected');
+                if (selected !== 'true') {
+                  await pickupTab.click();
+                }
+
+                await snap(page, `06-pickup-tab-attempt-${attempt}`, `[Step 4][Attempt ${attempt}] Afhaalpunten tab active`);
+
+                const activePanel = dialog.locator('[role="tabpanel"][data-state="active"]').first();
+                await expect(activePanel).toBeVisible({ timeout: 10000 });
+
+                const enabledBudbeeButtons = activePanel.locator('li[id^="BUNUR"] > button:not([disabled])');
+                const budbeeCount = await enabledBudbeeButtons.count();
+
+                if (budbeeCount === 0) {
+                  await snap(page, `99-no-budbee-attempt-${attempt}`, `❌ [Step 4][Attempt ${attempt}] No enabled Budbee pickup points found`);
+                  throw new Error('No enabled Budbee pickup points found in active Afhaalpunten list');
+                }
+
+                const firstBudbee = enabledBudbeeButtons.first();
+                const firstBudbeeText = (await firstBudbee.innerText()).trim().replace(/\s+/g, ' ');
+
+                await firstBudbee.scrollIntoViewIfNeeded();
+                await snap(page, `07-before-budbee-click-attempt-${attempt}`, `[Step 4][Attempt ${attempt}] First enabled Budbee option: ${firstBudbeeText}`);
+
+                await firstBudbee.click({ timeout: 15000 });
+                await page.waitForTimeout(2000);
+
+                await snap(page, `08-budbee-selected-attempt-${attempt}`, `✅ [Step 4][Attempt ${attempt}] Selected Budbee option: ${firstBudbeeText}`);
+
+                await context.storageState({ path: 'storage-state.json' });
+
+                await context.close();
+                await browser.close();
+                return true;
+              } catch (error) {
+                await snap(page, `98-step4-error-attempt-${attempt}`, `❌ [Step 4][Attempt ${attempt}] Failed: ${error.message}`);
+                await context.close().catch(() => {});
+                await browser.close().catch(() => {});
+                return false;
               }
+            }
 
-              await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
-              await snap(page, '02-cookies-handled', '[Step 4] Cookies handled');
+            let success = false;
+            const maxAttempts = 3;
 
-              const otherAddressBtn = page.getByRole('button', { name: /^Ander bezorgadres of afhaalpunt$/i });
-              await expect(otherAddressBtn).toBeVisible({ timeout: 20000 });
-              await otherAddressBtn.click();
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              console.log(`Starting Step 4 attempt ${attempt} of ${maxAttempts}`);
+              success = await trySelectBudbee(attempt);
+              if (success) break;
 
-              await snap(page, '03-opened-dialog', '[Step 4] Opened delivery-point dialog');
-
-              const dialog = page.locator('[role="dialog"]').filter({ hasText: /Je bezorgadressen/i }).first();
-              await expect(dialog).toBeVisible({ timeout: 20000 });
-
-              const pickupTab = dialog.getByRole('tab', { name: /^Afhaalpunten$/i });
-              await expect(pickupTab).toBeVisible({ timeout: 10000 });
-
-              const selected = await pickupTab.getAttribute('aria-selected');
-              if (selected !== 'true') {
-                await pickupTab.click();
+              if (attempt < maxAttempts) {
+                console.log(`Step 4 attempt ${attempt} failed, retrying...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
               }
+            }
 
-              await snap(page, '04-pickup-tab-active', '[Step 4] Afhaalpunten tab active');
-
-              const activePanel = dialog.locator('[role="tabpanel"][data-state="active"]').first();
-              await expect(activePanel).toBeVisible({ timeout: 10000 });
-
-              // Budbee entries appear as li ids starting with BUNUR
-              // PostNL entries appear as li ids starting with PNL
-              const enabledBudbeeButtons = activePanel.locator('li[id^="BUNUR"] > button:not([disabled])');
-
-              const budbeeCount = await enabledBudbeeButtons.count();
-              if (budbeeCount === 0) {
-                await snap(page, '99-no-enabled-budbee', '❌ [Step 4] No enabled Budbee pickup points found');
-                throw new Error('No enabled Budbee pickup points found in active Afhaalpunten list');
-              }
-
-              const firstBudbee = enabledBudbeeButtons.first();
-              const firstBudbeeText = (await firstBudbee.innerText()).trim().replace(/\s+/g, ' ');
-
-              await firstBudbee.scrollIntoViewIfNeeded();
-              await snap(page, '05-before-budbee-click', `[Step 4] First enabled Budbee option: ${firstBudbeeText}`);
-
-              await firstBudbee.click({ timeout: 15000 });
-
-              await page.waitForTimeout(2000);
-              await snap(page, '06-budbee-selected', `✅ [Step 4] Selected Budbee option: ${firstBudbeeText}`);
-
-              await context.storageState({ path: 'storage-state.json' });
-              console.log(`Budbee selection completed successfully: ${firstBudbeeText}`);
-            } catch (error) {
-              await snap(page, '98-step4-error', `❌ [Step 4] Failed: ${error.message}`);
-              throw error;
-            } finally {
-              await context.close();
-              await browser.close();
+            if (!success) {
+              throw new Error(`Step 4 failed after ${maxAttempts} attempts`);
             }
           });
           EOF
