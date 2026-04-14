@@ -21,28 +21,28 @@ jobs:
       bol-email: ${{ needs.setup.outputs.bol-email }}
 
   search-and-add-to-cart:
-    needs: login
+    needs: [setup, login]
     uses: ./.github/workflows/bol-step-search-add-cart.yml
     secrets: inherit
     with:
       bol-email: ${{ needs.setup.outputs.bol-email }}
 
   go-to-order:
-    needs: search-and-add-to-cart
+    needs: [setup, search-and-add-to-cart]
     uses: ./.github/workflows/bol-step-go-to-order.yml
     secrets: inherit
     with:
       bol-email: ${{ needs.setup.outputs.bol-email }}
 
   check-order:
-    needs: go-to-order
+    needs: [setup, go-to-order]
     uses: ./.github/workflows/bol-step-check-order.yml
     secrets: inherit
     with:
       bol-email: ${{ needs.setup.outputs.bol-email }}
 
   update-and-commit:
-    needs: check-order
+    needs: [setup, check-order]
     uses: ./.github/workflows/bol-update-commit.yml
     secrets: inherit
     with:
