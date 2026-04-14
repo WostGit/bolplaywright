@@ -1,4 +1,4 @@
-name: Bol - Step 3: Go to Order / Checkout
+name: "Bol - Step 3: Go to Order / Checkout"
 
 on:
   workflow_call:
