@@ -394,9 +394,9 @@
   run_id: '24095485865'
   repository: WostGit/bolplaywright
   workflow: Playwright Bol Registration Only
-  used_to_login: false
+  used_to_login: true
   created_at: 2026-04-07 17:38:30 UTC
-  last_login_at: null
+  last_login_at: 2026-04-14 21:19:53 UTC
 - email: daanbakker@qrlfoundation.org
   run_id: '24098027054'
   repository: WostGit/bolplaywright
