@@ -38,9 +38,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "================================================================="
-          echo " STEP 1: LOGIN"
-          echo "================================================================="
 
           cat > bol-login.spec.js <<'EOF'
           const { test, expect, chromium, request } = require('@playwright/test');
@@ -69,14 +66,17 @@ jobs:
                     }
                   }
                 });
+                await apiContext.dispose();
               } catch (e) {
                 console.error('Telegram Error:', e.message);
               }
             }
 
-            async function snap(page, file, caption, fullPage = true) {
-              await page.screenshot({ path: file, fullPage });
-              await sendTelegramAlert(file, caption);
+            async function snap(page, name, caption, fullPage = true) {
+              const filePath = `screenshots/${name}.png`;
+              fs.mkdirSync('screenshots', { recursive: true });
+              await page.screenshot({ path: filePath, fullPage });
+              await sendTelegramAlert(filePath, caption);
             }
 
             const browser = await chromium.launch({
@@ -86,6 +86,7 @@ jobs:
 
             const context = await browser.newContext({
               locale: 'nl-NL',
+              viewport: { width: 1366, height: 768 },
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
               proxy: process.env.PROXY_SERVER ? {
                 server: process.env.PROXY_SERVER,
@@ -99,36 +100,37 @@ jobs:
 
             try {
               await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
-              await snap(page, '01-home.png', '[Step 1] Home page loaded');
+              await snap(page, '01-home', '[Step 1] Home page loaded');
 
               await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
-              await snap(page, '02-cookies-handled.png', '[Step 1] Cookies handled');
+              await snap(page, '02-cookies', '[Step 1] Cookies handled');
 
               await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
-              await page.waitForURL('**/login**', { timeout: 30000 });
-              await snap(page, '03-login-page.png', '[Step 1] Login page opened');
+              await page.waitForURL(/login/i, { timeout: 30000 });
+              await snap(page, '03-login-page', '[Step 1] Login page opened');
 
               await page.getByRole('textbox', { name: /E-mailadres/i }).fill(email);
+              await snap(page, '04-email-filled', '[Step 1] Email filled');
+
               await page.getByRole('textbox', { name: /Wachtwoord/i }).fill(password);
-              await snap(page, '04-credentials-filled.png', '[Step 1] Credentials filled');
+              // Intentionally no screenshot here to avoid sending password-filled screens.
 
               await page.getByRole('button', { name: /^Inloggen$/i }).click();
-              await snap(page, '05-login-submitted.png', '[Step 1] Login submitted');
+              await snap(page, '05-login-submitted', '[Step 1] Login submitted');
 
               await Promise.race([
                 page.waitForURL('https://www.bol.com/nl/nl/**', { timeout: 30000 }),
-                page.waitForURL('**/account/overzicht**', { timeout: 30000 })
+                page.waitForURL('**/account/overzicht**', { timeout: 30000 }),
+                page.waitForURL('**/mijnbol/**', { timeout: 30000 })
               ]);
 
               await page.waitForLoadState('networkidle');
-              await snap(page, '06-login-success.png', '✅ [Step 1] Login successful');
+              await snap(page, '06-login-success', '✅ [Step 1] Login successful');
 
               await context.storageState({ path: 'storage-state.json' });
-              console.log('Saved storage-state.json');
+              console.log('Login completed successfully and storage state saved');
             } catch (error) {
-              try {
-                await snap(page, 'error-login.png', `❌ [Step 1] Login failed: ${error.message}`);
-              } catch {}
+              await snap(page, '99-login-error', `❌ [Step 1] Login failed: ${error.message}`);
               throw error;
             } finally {
               await context.close();
@@ -145,3 +147,11 @@ jobs:
           name: bol-auth-state
           path: storage-state.json
           if-no-files-found: error
+
+      - name: Upload login screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-login-screenshots
+          path: screenshots/
+          if-no-files-found: ignore
