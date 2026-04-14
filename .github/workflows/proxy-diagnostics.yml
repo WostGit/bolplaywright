@@ -1,0 +1,321 @@
+name: "Proxy Diagnostics"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  proxy-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y
+          npm install @playwright/test
+          npx playwright install --with-deps chromium
+          mkdir -p logs out
+
+      - name: Normalize proxy and print non-secret diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RAW_PROXY="${PROXY_SERVER:-}"
+
+          normalize_proxy() {
+            local p="$1"
+            if [ -z "$p" ]; then
+              echo ""
+              return
+            fi
+            case "$p" in
+              https://*)
+                echo "http://${p#https://}"
+                ;;
+              http://*|socks5://*)
+                echo "$p"
+                ;;
+              *)
+                echo "http://$p"
+                ;;
+            esac
+          }
+
+          NORMALIZED_PROXY="$(normalize_proxy "$RAW_PROXY")"
+
+          {
+            echo "RAW_PROXY_PRESENT=$([ -n "$RAW_PROXY" ] && echo yes || echo no)"
+            echo "PROXY_USERNAME_PRESENT=$([ -n "${PROXY_USERNAME:-}" ] && echo yes || echo no)"
+            echo "PROXY_PASSWORD_PRESENT=$([ -n "${PROXY_PASSWORD:-}" ] && echo yes || echo no)"
+            echo "NORMALIZED_PROXY_PRESENT=$([ -n "$NORMALIZED_PROXY" ] && echo yes || echo no)"
+            echo "NORMALIZED_PROXY=$NORMALIZED_PROXY"
+            echo "NORMALIZED_PROXY_SCHEME=${NORMALIZED_PROXY%%://*}"
+          } | tee logs/proxy-env.txt
+
+          {
+            echo "NORMALIZED_PROXY=$NORMALIZED_PROXY"
+          } >> "$GITHUB_ENV"
+
+      - name: Direct connection sanity checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== DIRECT CURL: HTTPS example.com ====="
+            curl -I -L --max-time 30 https://example.com
+
+            echo
+            echo "===== DIRECT CURL: HTTPS api.ipify.org ====="
+            curl -L --max-time 30 https://api.ipify.org
+
+            echo
+            echo "===== DIRECT CURL: HTTPS httpbin ip ====="
+            curl -L --max-time 30 https://httpbin.org/ip
+          } 2>&1 | tee logs/direct-curl.txt
+
+      - name: Proxy curl sanity checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${NORMALIZED_PROXY:-}" ]; then
+            echo "No proxy configured" | tee logs/proxy-curl.txt
+            exit 0
+          fi
+
+          CURL_PROXY_ARGS=(--proxy "$NORMALIZED_PROXY")
+          if [ -n "${PROXY_USERNAME:-}" ] || [ -n "${PROXY_PASSWORD:-}" ]; then
+            CURL_PROXY_ARGS+=(--proxy-user "${PROXY_USERNAME:-}:${PROXY_PASSWORD:-}")
+          fi
+
+          {
+            echo "===== PROXY CURL: HTTP example.com ====="
+            curl -v -L --max-time 40 "${CURL_PROXY_ARGS[@]}" http://example.com || true
+
+            echo
+            echo "===== PROXY CURL: HTTPS example.com ====="
+            curl -v -L --max-time 40 "${CURL_PROXY_ARGS[@]}" https://example.com || true
+
+            echo
+            echo "===== PROXY CURL: HTTPS api.ipify.org ====="
+            curl -v -L --max-time 40 "${CURL_PROXY_ARGS[@]}" https://api.ipify.org || true
+
+            echo
+            echo "===== PROXY CURL: HTTPS httpbin ip ====="
+            curl -v -L --max-time 40 "${CURL_PROXY_ARGS[@]}" https://httpbin.org/ip || true
+          } 2>&1 | tee logs/proxy-curl.txt
+
+      - name: OpenSSL CONNECT/TLS diagnostics through proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${NORMALIZED_PROXY:-}" ]; then
+            echo "No proxy configured" | tee logs/proxy-openssl.txt
+            exit 0
+          fi
+
+          PROXY_NO_SCHEME="${NORMALIZED_PROXY#*://}"
+          PROXY_HOST="${PROXY_NO_SCHEME%:*}"
+          PROXY_PORT="${PROXY_NO_SCHEME##*:}"
+
+          {
+            echo "===== OPENSSL VIA PROXY TO example.com:443 ====="
+            echo | openssl s_client \
+              -proxy "${PROXY_HOST}:${PROXY_PORT}" \
+              -connect example.com:443 \
+              -servername example.com \
+              -brief || true
+
+            echo
+            echo "===== OPENSSL VIA PROXY TO www.bol.com:443 ====="
+            echo | openssl s_client \
+              -proxy "${PROXY_HOST}:${PROXY_PORT}" \
+              -connect www.bol.com:443 \
+              -servername www.bol.com \
+              -brief || true
+          } 2>&1 | tee logs/proxy-openssl.txt
+
+      - name: Node HTTPS diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > out/node-https-diagnostics.js <<'EOF'
+          const https = require('https');
+          const fs = require('fs');
+
+          function log(msg) {
+            console.log(msg);
+            fs.appendFileSync('logs/node-https.txt', msg + '\n');
+          }
+
+          async function testDirect(url) {
+            return new Promise((resolve) => {
+              log(`DIRECT TEST ${url}`);
+              const req = https.get(url, (res) => {
+                log(`DIRECT STATUS ${url}: ${res.statusCode}`);
+                res.resume();
+                res.on('end', resolve);
+              });
+              req.on('error', (err) => {
+                log(`DIRECT ERROR ${url}: ${err.message}`);
+                resolve();
+              });
+              req.setTimeout(30000, () => {
+                log(`DIRECT TIMEOUT ${url}`);
+                req.destroy(new Error('timeout'));
+              });
+            });
+          }
+
+          (async () => {
+            await testDirect('https://example.com');
+            await testDirect('https://api.ipify.org');
+            await testDirect('https://www.bol.com/nl/nl/');
+          })();
+          EOF
+
+          node out/node-https-diagnostics.js
+
+      - name: Playwright proxy diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > out/playwright-proxy-diagnostics.spec.js <<'EOF'
+          const { test, chromium } = require('@playwright/test');
+          const fs = require('fs');
+
+          const rawProxy = process.env.PROXY_SERVER?.trim();
+          function normalizeProxyServer(proxyValue) {
+            if (!proxyValue) return undefined;
+            if (proxyValue.startsWith('https://')) {
+              return 'http://' + proxyValue.slice('https://'.length);
+            }
+            if (proxyValue.startsWith('http://') || proxyValue.startsWith('socks5://')) {
+              return proxyValue;
+            }
+            return `http://${proxyValue}`;
+          }
+          const normalizedProxy = normalizeProxyServer(rawProxy);
+
+          function log(msg) {
+            console.log(msg);
+            fs.appendFileSync('logs/playwright-proxy.txt', msg + '\n');
+          }
+
+          async function runCase(label, useProxy, targetUrl) {
+            log(`===== CASE ${label} =====`);
+            log(`useProxy=${useProxy}`);
+            log(`targetUrl=${targetUrl}`);
+            log(`normalizedProxy=${normalizedProxy || 'none'}`);
+
+            const browser = await chromium.launch({
+              headless: true,
+              args: ['--disable-dev-shm-usage', '--no-sandbox', '--disable-gpu']
+            });
+
+            const context = await browser.newContext({
+              proxy: useProxy && normalizedProxy ? {
+                server: normalizedProxy,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
+              } : undefined,
+              ignoreHTTPSErrors: false,
+              viewport: { width: 1366, height: 768 }
+            });
+
+            const page = await context.newPage();
+
+            page.on('requestfailed', req => {
+              const f = req.failure();
+              log(`[${label}] REQUEST FAILED ${req.method()} ${req.url()} :: ${f ? f.errorText : 'unknown'}`);
+            });
+            page.on('response', res => {
+              log(`[${label}] RESPONSE ${res.status()} ${res.url()}`);
+            });
+            page.on('framenavigated', frame => {
+              if (frame === page.mainFrame()) {
+                log(`[${label}] NAVIGATED ${frame.url()}`);
+              }
+            });
+
+            try {
+              const response = await page.goto(targetUrl, {
+                waitUntil: 'domcontentloaded',
+                timeout: 45000
+              });
+              const finalUrl = page.url();
+              const title = await page.title().catch(() => '');
+              const body = await page.locator('body').innerText().catch(() => '');
+              fs.writeFileSync(`out/${label.replace(/[^a-zA-Z0-9_-]/g, '_')}.html`, await page.content(), 'utf8');
+              await page.screenshot({ path: `out/${label.replace(/[^a-zA-Z0-9_-]/g, '_')}.png`, fullPage: true }).catch(() => {});
+              log(`[${label}] SUCCESS status=${response ? response.status() : 'no-response'} finalUrl=${finalUrl} title=${title}`);
+              log(`[${label}] BODY_SNIPPET=${body.slice(0, 300).replace(/\s+/g, ' ')}`);
+            } catch (err) {
+              log(`[${label}] ERROR ${err.message}`);
+              try {
+                fs.writeFileSync(`out/${label.replace(/[^a-zA-Z0-9_-]/g, '_')}-error.html`, await page.content(), 'utf8');
+                await page.screenshot({ path: `out/${label.replace(/[^a-zA-Z0-9_-]/g, '_')}-error.png`, fullPage: true });
+              } catch {}
+            } finally {
+              await context.close().catch(() => {});
+              await browser.close().catch(() => {});
+            }
+          }
+
+          test('playwright proxy diagnostics', async () => {
+            await runCase('direct-example', false, 'https://example.com');
+            await runCase('proxy-example', true, 'https://example.com');
+            await runCase('direct-bol', false, 'https://www.bol.com/nl/nl/');
+            await runCase('proxy-bol', true, 'https://www.bol.com/nl/nl/');
+          });
+          EOF
+
+          npx playwright test out/playwright-proxy-diagnostics.spec.js --reporter=line 2>&1 | tee logs/playwright-proxy-run.txt
+
+      - name: Summarize likely diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== QUICK INTERPRETATION GUIDE ====="
+            echo "1. If direct HTTPS works and proxy HTTPS fails, the proxy is broken for TLS/CONNECT."
+            echo "2. If proxy HTTP works but proxy HTTPS fails, the proxy endpoint/scheme is wrong or provider does not support HTTPS tunneling correctly."
+            echo "3. If even example.com fails through proxy, do not continue testing bol.com with that proxy."
+            echo "4. If attempt without proxy works, use no proxy or replace the proxy provider."
+          } | tee logs/summary.txt
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-diagnostics-logs
+          path: logs/
+          if-no-files-found: ignore
+
+      - name: Upload diagnostic outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-diagnostics-out
+          path: out/
+          if-no-files-found: ignore
