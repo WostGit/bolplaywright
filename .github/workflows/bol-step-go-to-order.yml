@@ -17,6 +17,7 @@ jobs:
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -96,34 +97,32 @@ jobs:
             page.setDefaultTimeout(40000);
 
             try {
-              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', {
+              await page.goto('https://www.bol.com/nl/nl/basket/', {
                 waitUntil: 'domcontentloaded',
                 timeout: 60000
               });
+
               await page.waitForLoadState('networkidle');
-              await snap(page, '01-cart-opened', '[Step 3] Cart opened');
+              await snap(page, '01-basket-opened', '[Step 3] Basket page opened');
 
               if (/login/i.test(page.url())) {
                 throw new Error(`Redirected to login page. Auth state missing or expired. URL: ${page.url()}`);
               }
 
-              await snap(page, '02-before-checkout', '[Step 3] Looking for checkout button');
+              // Accept cookies if they reappear
+              await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
+              await snap(page, '02-cookies-handled', '[Step 3] Cookies handled');
 
-              const exactCheckout = page.getByRole('link', { name: /^Naar bestellen$/i });
+              // Exact intended CTA
+              const checkoutBtn = page.getByRole('link', { name: /^Verder naar bestellen$/i });
 
-              if (await exactCheckout.count()) {
-                await expect(exactCheckout.first()).toBeVisible();
-                await exactCheckout.first().click();
-              } else {
-                const fallback = page.locator('a').filter({ hasText: /^Naar bestellen$/i }).first();
-                await expect(fallback).toBeVisible();
-                await fallback.click();
-              }
+              await expect(checkoutBtn).toBeVisible({ timeout: 15000 });
+              await snap(page, '03-before-checkout-click', '[Step 3] Found "Verder naar bestellen" button');
 
-              await snap(page, '03-checkout-clicked', '[Step 3] Checkout button clicked');
+              await checkoutBtn.click();
 
               await page.waitForLoadState('networkidle');
-              await snap(page, '04-checkout-page', '✅ [Step 3] Reached checkout / order page');
+              await snap(page, '04-after-checkout-click', '✅ [Step 3] Clicked "Verder naar bestellen"');
 
               await context.storageState({ path: 'storage-state.json' });
               console.log('Navigated to order page successfully');
