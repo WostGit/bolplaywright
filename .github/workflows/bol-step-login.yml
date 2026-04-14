@@ -42,14 +42,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           echo "============================================================"
           echo "PROXY CURL HEALTH CHECK"
           echo "============================================================"
-          echo "PROXY_SERVER present: $([ -n "${PROXY_SERVER:-}" ] && echo yes || echo no)"
-          echo "PROXY_USERNAME present: $([ -n "${PROXY_USERNAME:-}" ] && echo yes || echo no)"
-          echo "PROXY_PASSWORD present: $([ -n "${PROXY_PASSWORD:-}" ] && echo yes || echo no)"
-
           curl -v \
             --proxy "${PROXY_SERVER}" \
             --proxy-user "${PROXY_USERNAME}:${PROXY_PASSWORD}" \
@@ -79,9 +74,7 @@ jobs:
 
             function normalizeProxyServer(proxyValue) {
               if (!proxyValue) return undefined;
-              if (/^[a-zA-Z]+:\/\//.test(proxyValue)) {
-                return proxyValue;
-              }
+              if (/^[a-zA-Z]+:\/\//.test(proxyValue)) return proxyValue;
               return `https://${proxyValue}`;
             }
 
@@ -142,8 +135,9 @@ jobs:
               }
             }
 
-            async function dumpMeta(page, attempt, stage) {
+            async function dumpMeta(page, context, attempt, stage) {
               try {
+                const cookies = await context.cookies().catch(() => []);
                 const meta = {
                   timestamp: now(),
                   attempt,
@@ -151,7 +145,9 @@ jobs:
                   url: page.url(),
                   title: await page.title().catch(() => null),
                   proxyPresent: !!normalizedProxy,
-                  proxyScheme: normalizedProxy ? normalizedProxy.split('://')[0] : null
+                  proxyScheme: normalizedProxy ? normalizedProxy.split('://')[0] : null,
+                  cookieCount: cookies.length,
+                  cookieNames: cookies.map(c => c.name).slice(0, 100)
                 };
                 const file = `logs/meta-attempt-${attempt}-${stage}.json`;
                 fs.writeFileSync(file, JSON.stringify(meta, null, 2), 'utf8');
@@ -164,14 +160,14 @@ jobs:
             function attachPageLogging(page, attempt) {
               page.on('request', req => {
                 const url = req.url();
-                if (/bol\.com|chrome-error|example\.com|telegram/i.test(url)) {
+                if (/bol\.com|chrome-error|example\.com|telegram|authorize|login/i.test(url)) {
                   logLine(`[Attempt ${attempt}] REQUEST ${req.method()} ${url}`);
                 }
               });
 
               page.on('response', res => {
                 const url = res.url();
-                if (/bol\.com|chrome-error|example\.com/i.test(url)) {
+                if (/bol\.com|chrome-error|example\.com|authorize|login/i.test(url)) {
                   logLine(`[Attempt ${attempt}] RESPONSE ${res.status()} ${url}`);
                 }
               });
@@ -209,49 +205,107 @@ jobs:
               }
             }
 
-            async function detectPostLoginOutcome(page, attempt) {
+            async function looksLoggedIn(page, context, attempt) {
+              const url = page.url();
+              if (/account|mijnbol|overzicht|bestellen|checkout/i.test(url)) {
+                logLine(`[Attempt ${attempt}] Success signal: URL indicates logged-in area`);
+                return true;
+              }
+
+              const cookies = await context.cookies().catch(() => []);
+              const bolCookies = cookies.filter(c =>
+                /bol\.com/.test(c.domain) &&
+                /auth|login|session|token|jwt|ssid|secure/i.test(c.name)
+              );
+              if (bolCookies.length > 0) {
+                logLine(`[Attempt ${attempt}] Success signal: auth/session-like cookies found: ${bolCookies.map(c => c.name).join(', ')}`);
+                return true;
+              }
+
+              const selectors = [
+                page.getByRole('link', { name: /account|mijn bol|mijn account|bestellingen/i }).first(),
+                page.locator('text=/accountoverzicht|mijn account|bestellingen|uitloggen/i').first(),
+                page.locator('[href*="/account/overzicht"], [href*="/mijnbol"], [href*="/bestellingen"]').first()
+              ];
+
+              for (const sel of selectors) {
+                try {
+                  if (await sel.isVisible({ timeout: 1000 }).catch(() => false)) {
+                    logLine(`[Attempt ${attempt}] Success signal: account-related UI visible`);
+                    return true;
+                  }
+                } catch {}
+              }
+
+              return false;
+            }
+
+            async function detectBlockingState(page, attempt) {
+              const blockers = [
+                /captcha/i,
+                /robot/i,
+                /beveiligingscontrole/i,
+                /controleer/i,
+                /verify/i,
+                /verificatie/i,
+                /te veel pogingen/i
+              ];
+
+              const bodyText = await page.locator('body').innerText().catch(() => '');
+              for (const re of blockers) {
+                if (re.test(bodyText)) {
+                  logLine(`[Attempt ${attempt}] Blocking state detected via body text: ${re}`);
+                  return `blocking:${re}`;
+                }
+              }
+
+              return null;
+            }
+
+            async function waitForLoginResolution(page, context, attempt) {
               logLine(`[Attempt ${attempt}] Monitoring post-login outcome`);
 
-              const outcome = await Promise.race([
-                page.waitForURL(/account|mijnbol|overzicht|bestellen|checkout/i, { timeout: 45000 })
-                  .then(() => 'success-url'),
+              const start = Date.now();
+              const timeoutMs = 60000;
+              let lastUrl = page.url();
 
-                page.locator('text=/captcha|beveiligingscontrole|verify|verificatie|robot/i')
-                  .waitFor({ timeout: 45000 })
-                  .then(() => 'captcha')
-                  .catch(() => null),
+              while (Date.now() - start < timeoutMs) {
+                await page.waitForTimeout(2000);
 
-                page.locator('text=/mijn account|accountoverzicht|bestellingen/i')
-                  .waitFor({ timeout: 45000 })
-                  .then(() => 'success-content')
-                  .catch(() => null),
+                const currentUrl = page.url();
+                if (currentUrl !== lastUrl) {
+                  logLine(`[Attempt ${attempt}] URL changed during login resolution: ${lastUrl} -> ${currentUrl}`);
+                  lastUrl = currentUrl;
+                }
 
-                page.locator('text=/inloggen mislukt|onjuiste|probeer opnieuw|wachtwoord|e-mailadres/i')
-                  .waitFor({ timeout: 45000 })
-                  .then(() => 'login-page-still-visible')
-                  .catch(() => null)
-              ]);
+                const blocking = await detectBlockingState(page, attempt);
+                if (blocking) {
+                  await dumpMeta(page, context, attempt, 'blocking-state');
+                  await dumpHtml(page, `attempt-${attempt}-blocking-state`);
+                  await snap(page, `blocking-state-attempt-${attempt}`, `❌ [Step 1][Attempt ${attempt}] Blocking state detected: ${blocking}`);
+                  throw new Error(`Blocking state detected after login submit: ${blocking}. URL: ${page.url()}`);
+                }
 
-              logLine(`[Attempt ${attempt}] Post-login outcome: ${outcome || 'unknown'}`);
-              logLine(`[Attempt ${attempt}] Current URL after submit: ${page.url()}`);
+                if (await looksLoggedIn(page, context, attempt)) {
+                  await dumpMeta(page, context, attempt, 'post-login-success-signal');
+                  await dumpHtml(page, `attempt-${attempt}-post-login-success-signal`);
+                  await snap(page, `post-login-success-signal-attempt-${attempt}`, `✅ [Step 1][Attempt ${attempt}] Logged-in signal detected. URL: ${page.url()}`);
+                  return true;
+                }
 
-              await dumpMeta(page, attempt, 'post-login-outcome');
-              await dumpHtml(page, `attempt-${attempt}-post-login-outcome`);
-              await snap(page, `06-post-login-outcome-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Post-login outcome: ${outcome || 'unknown'} | URL: ${page.url()}`);
-
-              if (outcome === 'captcha') {
-                throw new Error(`CAPTCHA or verification detected after login. URL: ${page.url()}`);
+                const bodyText = await page.locator('body').innerText().catch(() => '');
+                if (/inloggen mislukt|onjuiste gegevens|probeer opnieuw|wachtwoord onjuist|e-mailadres onjuist/i.test(bodyText)) {
+                  await dumpMeta(page, context, attempt, 'login-error-visible');
+                  await dumpHtml(page, `attempt-${attempt}-login-error-visible`);
+                  await snap(page, `login-error-visible-attempt-${attempt}`, `❌ [Step 1][Attempt ${attempt}] Login error visible. URL: ${page.url()}`);
+                  throw new Error(`Login error text visible after submit. URL: ${page.url()}`);
+                }
               }
 
-              if (outcome === 'login-page-still-visible') {
-                throw new Error(`Still on login page after submit. URL: ${page.url()}`);
-              }
-
-              if (!outcome) {
-                throw new Error(`No post-login outcome detected within timeout. URL: ${page.url()}`);
-              }
-
-              return outcome;
+              await dumpMeta(page, context, attempt, 'login-resolution-timeout');
+              await dumpHtml(page, `attempt-${attempt}-login-resolution-timeout`);
+              await snap(page, `login-resolution-timeout-attempt-${attempt}`, `❌ [Step 1][Attempt ${attempt}] No login resolution within timeout. URL: ${page.url()}`);
+              throw new Error(`No login resolution detected within timeout. URL: ${page.url()}`);
             }
 
             async function tryLogin(attempt) {
@@ -308,7 +362,7 @@ jobs:
                   timeout: 60000
                 });
 
-                await dumpMeta(page, attempt, 'after-home-goto');
+                await dumpMeta(page, context, attempt, 'after-home-goto');
                 await dumpHtml(page, `attempt-${attempt}-after-home-goto`);
                 await snap(page, `01-home-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Home page loaded`);
 
@@ -324,7 +378,7 @@ jobs:
                 await loginLink.click({ force: true });
 
                 await page.waitForURL(/login/i, { timeout: 30000 });
-                await dumpMeta(page, attempt, 'login-page');
+                await dumpMeta(page, context, attempt, 'login-page');
                 await dumpHtml(page, `attempt-${attempt}-login-page`);
                 await snap(page, `03-login-page-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login page opened`);
 
@@ -342,13 +396,15 @@ jobs:
 
                 const loginButton = page.getByRole('button', { name: /^Inloggen$/i });
                 await expect(loginButton).toBeVisible({ timeout: 15000 });
-                await loginButton.click();
+
+                logLine(`[Attempt ${attempt}] Clicking login button`);
+                await loginButton.click({ timeout: 15000 });
                 await snap(page, `06-login-submitted-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login submitted`);
 
-                await detectPostLoginOutcome(page, attempt);
+                await waitForLoginResolution(page, context, attempt);
 
                 await page.waitForTimeout(3000);
-                await dumpMeta(page, attempt, 'login-success');
+                await dumpMeta(page, context, attempt, 'login-success');
                 await dumpHtml(page, `attempt-${attempt}-login-success`);
                 await snap(page, `07-login-success-attempt-${attempt}`, `✅ [Step 1][Attempt ${attempt}] Login successful`);
 
@@ -362,7 +418,7 @@ jobs:
                 const message = String(error && error.message ? error.message : error);
                 logLine(`[Attempt ${attempt}] LOGIN FAILURE: ${message}`);
 
-                await dumpMeta(page, attempt, 'login-error');
+                await dumpMeta(page, context, attempt, 'login-error');
                 await dumpHtml(page, `attempt-${attempt}-login-error`);
                 await snap(page, `99-login-error-attempt-${attempt}`, `❌ [Step 1][Attempt ${attempt}] Login failed: ${message}`);
 
