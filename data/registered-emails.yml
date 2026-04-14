@@ -1293,3 +1293,10 @@
   used_to_login: false
   created_at: 2026-04-14 14:11:24 UTC
   last_login_at: null
+- email: tobiasschipper@qrlfoundation.org
+  run_id: '24403906352'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-14 14:14:28 UTC
+  last_login_at: null
