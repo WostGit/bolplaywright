@@ -19,8 +19,11 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
@@ -48,21 +51,27 @@ jobs:
                 const apiContext = await request.newContext();
                 const buffer = fs.readFileSync(filePath);
                 await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
-                  multipart: { 
-                    chat_id: chatId, 
-                    caption, 
-                    photo: { name: path.basename(filePath), mimeType: 'image/png', buffer } 
+                  multipart: {
+                    chat_id: chatId,
+                    caption: caption,
+                    photo: {
+                      name: path.basename(filePath),
+                      mimeType: 'image/png',
+                      buffer: buffer
+                    }
                   }
                 });
-              } catch (e) {}
+              } catch (e) {
+                console.error(e.message);
+              }
             }
 
             const browser = await chromium.launch({ headless: false });
             const context = await browser.newContext({
-              proxy: { 
-                server: process.env.PROXY_SERVER, 
-                username: process.env.PROXY_USERNAME, 
-                password: process.env.PROXY_PASSWORD 
+              proxy: {
+                server: process.env.PROXY_SERVER,
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD
               }
             });
             const page = await context.newPage();
