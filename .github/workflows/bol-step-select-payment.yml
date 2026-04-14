@@ -1,0 +1,183 @@
+name: "Bol - Step 5: Select Payment Method"
+
+on:
+  workflow_call:
+    inputs:
+      bol-email:
+        required: true
+        type: string
+
+jobs:
+  select-payment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download auth state
+        uses: actions/download-artifact@v4
+        with:
+          name: bol-auth-state
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: |
+          npm init -y
+          npm install @playwright/test
+          npx playwright install --with-deps chromium
+
+      - name: Execute Payment Selection Step
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > bol-select-payment.spec.js <<'EOF'
+          const { test, expect, chromium, request } = require('@playwright/test');
+          const fs = require('fs');
+          const path = require('path');
+
+          test('Select payment method', async () => {
+            test.setTimeout(180000);
+
+            const botToken = process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = process.env.TELEGRAM_CHAT_ID;
+
+            async function sendTelegramAlert(filePath, caption) {
+              if (!botToken || !chatId) return;
+              try {
+                const apiContext = await request.newContext();
+                const buffer = fs.readFileSync(filePath);
+                await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
+                  multipart: {
+                    chat_id: chatId,
+                    caption,
+                    photo: {
+                      name: path.basename(filePath),
+                      mimeType: 'image/png',
+                      buffer
+                    }
+                  }
+                });
+                await apiContext.dispose();
+              } catch (e) {
+                console.error('Telegram Error:', e.message);
+              }
+            }
+
+            async function snap(page, name, caption, fullPage = true) {
+              const filePath = `screenshots/${name}.png`;
+              fs.mkdirSync('screenshots', { recursive: true });
+              await page.screenshot({ path: filePath, fullPage }).catch(() => {});
+              if (fs.existsSync(filePath)) {
+                await sendTelegramAlert(filePath, caption);
+              }
+            }
+
+            async function trySelectPayment(attempt) {
+              const browser = await chromium.launch({ headless: true });
+
+              const context = await browser.newContext({
+                viewport: { width: 1366, height: 768 },
+                storageState: 'storage-state.json',
+                proxy: process.env.PROXY_SERVER ? {
+                  server: process.env.PROXY_SERVER,
+                  username: process.env.PROXY_USERNAME,
+                  password: process.env.PROXY_PASSWORD
+                } : undefined
+              });
+
+              const page = await context.newPage();
+              page.setDefaultTimeout(30000);
+              page.setDefaultNavigationTimeout(60000);
+
+              try {
+                await page.goto('https://www.bol.com/nl/nl/checkout/', {
+                  waitUntil: 'domcontentloaded',
+                  timeout: 60000
+                });
+
+                await snap(page, `01-checkout-opened-${attempt}`, `[Step 5][Attempt ${attempt}] Checkout opened: ${page.url()}`);
+
+                await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
+                await snap(page, `02-cookies-${attempt}`, `[Step 5][Attempt ${attempt}] Cookies handled`);
+
+                const otherPaymentBtn = page.getByRole('button', { name: /^Andere betaalmethode$/i });
+                await expect(otherPaymentBtn).toBeVisible({ timeout: 20000 });
+                await otherPaymentBtn.click();
+
+                await snap(page, `03-payment-options-opened-${attempt}`, `[Step 5][Attempt ${attempt}] Opened payment options`);
+
+                const creditCardBtn = page.getByRole('button', { name: /Creditcard of betaalpas/i }).first();
+                await expect(creditCardBtn).toBeVisible({ timeout: 30000 });
+
+                await creditCardBtn.scrollIntoViewIfNeeded();
+                await snap(page, `04-before-payment-click-${attempt}`, `[Step 5][Attempt ${attempt}] Found payment option: Creditcard of betaalpas`);
+
+                await creditCardBtn.click({ timeout: 15000 });
+                await page.waitForTimeout(3000);
+
+                await snap(page, `05-payment-selected-${attempt}`, `✅ [Step 5][Attempt ${attempt}] Selected payment method: Creditcard of betaalpas`);
+
+                await context.storageState({ path: 'storage-state.json' });
+
+                await context.close();
+                await browser.close();
+                return true;
+              } catch (error) {
+                await snap(page, `99-payment-error-${attempt}`, `❌ [Step 5][Attempt ${attempt}] Failed: ${error.message}`);
+                await context.close().catch(() => {});
+                await browser.close().catch(() => {});
+                return false;
+              }
+            }
+
+            let success = false;
+            const maxAttempts = 3;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              console.log(`Starting Step 5 attempt ${attempt} of ${maxAttempts}`);
+              success = await trySelectPayment(attempt);
+              if (success) break;
+
+              if (attempt < maxAttempts) {
+                console.log(`Step 5 attempt ${attempt} failed, retrying...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+              }
+            }
+
+            if (!success) {
+              throw new Error(`Step 5 failed after ${maxAttempts} attempts`);
+            }
+          });
+          EOF
+
+          npx playwright test bol-select-payment.spec.js --reporter=line
+
+      - name: Upload updated auth state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-auth-state
+          path: storage-state.json
+          if-no-files-found: ignore
+          overwrite: true
+
+      - name: Upload step 5 screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-step5-screenshots
+          path: screenshots/
+          if-no-files-found: ignore
