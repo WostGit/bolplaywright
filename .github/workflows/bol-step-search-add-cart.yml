@@ -18,10 +18,15 @@ jobs:
       PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Download auth state
+        uses: actions/download-artifact@v4
+        with:
+          name: bol-auth-state
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -40,9 +45,9 @@ jobs:
           echo "================================================================="
           echo " STEP 2: SEARCH + ADD TO CART"
           echo "================================================================="
-          
+
           cat > bol-search-cart.spec.js <<'EOF'
-          const { test, chromium } = require('@playwright/test');
+          const { test, expect, chromium, request } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
 
@@ -53,17 +58,16 @@ jobs:
             async function sendTelegramAlert(filePath, caption) {
               if (!botToken || !chatId) return;
               try {
-                const { request } = require('@playwright/test');
                 const apiContext = await request.newContext();
                 const buffer = fs.readFileSync(filePath);
                 await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
                   multipart: {
                     chat_id: chatId,
-                    caption: caption,
+                    caption,
                     photo: {
                       name: path.basename(filePath),
                       mimeType: 'image/png',
-                      buffer: buffer
+                      buffer
                     }
                   }
                 });
@@ -72,36 +76,60 @@ jobs:
               }
             }
 
-            const browser = await chromium.launch({ headless: true }); // Headless is usually safer for CI
+            async function snap(page, file, caption, fullPage = true) {
+              await page.screenshot({ path: file, fullPage });
+              await sendTelegramAlert(file, caption);
+            }
+
+            const browser = await chromium.launch({ headless: true });
+
             const context = await browser.newContext({
-              proxy: {
+              storageState: 'storage-state.json',
+              proxy: process.env.PROXY_SERVER ? {
                 server: process.env.PROXY_SERVER,
                 username: process.env.PROXY_USERNAME,
                 password: process.env.PROXY_PASSWORD
-              }
+              } : undefined
             });
+
             const page = await context.newPage();
+            page.setDefaultTimeout(40000);
 
             try {
-              // Direct add-to-cart URL
-              await page.goto('https://www.bol.com/nl/order/basket/addItems.html?productId=9300000035840899&offerUid=5589e402-f3f8-446a-8495-383cb58b6cb6&quantity=1', { waitUntil: 'networkidle' });
-              
-              // Verify cart
-              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', { waitUntil: 'networkidle' });
-              await page.waitForTimeout(2000);
-              
-              const screenshotPath = 'cart-added-success.png';
-              await page.screenshot({ path: screenshotPath, fullPage: true });
-              await sendTelegramAlert(screenshotPath, '✅ Product added to cart successfully');
-              console.log('Added to cart successfully');
+              await page.goto('https://www.bol.com/nl/order/basket/addItems.html?productId=9300000035840899&offerUid=5589e402-f3f8-446a-8495-383cb58b6cb6&quantity=1', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+              });
+              await page.waitForLoadState('networkidle');
+              await snap(page, '01-add-items-result.png', '[Step 2] Add-to-cart URL visited');
+
+              await page.goto('https://www.bol.com/nl/nl/winkelwagentje/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+              });
+              await page.waitForLoadState('networkidle');
+              await snap(page, '02-cart-page.png', '[Step 2] Cart page opened');
+
+              await expect(page).toHaveURL(/winkelwagentje|basket|cart/i);
+              await snap(page, '03-cart-verified.png', '✅ [Step 2] Product/cart state verified');
             } catch (err) {
-              console.error('Task Failed:', err.message);
+              try {
+                await snap(page, 'error-search-cart.png', `❌ [Step 2] Failed: ${err.message}`);
+              } catch {}
               throw err;
             } finally {
+              await context.storageState({ path: 'storage-state.json' });
               await context.close();
               await browser.close();
             }
           });
           EOF
 
-          xvfb-run npx playwright test bol-search-cart.spec.js
+          npx playwright test bol-search-cart.spec.js
+
+      - name: Upload auth state
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-auth-state
+          path: storage-state.json
+          if-no-files-found: error
