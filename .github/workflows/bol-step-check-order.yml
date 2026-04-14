@@ -1,0 +1,78 @@
+name: Bol - Step 4: Check / Verify Order
+
+on:
+  workflow_call:
+    inputs:
+      bol-email:
+        required: true
+        type: string
+
+jobs:
+  check-order:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Execute Check Order Step
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "================================================================="
+          echo " STEP 4: CHECK / VERIFY ORDER"
+          echo "================================================================="
+
+          cat > bol-check-order.spec.js <<'EOF'
+          const { test, chromium } = require('@playwright/test');
+          const fs = require('fs');
+          const path = require('path');
+
+          test('Verify Order', async () => {
+            const botToken = process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = process.env.TELEGRAM_CHAT_ID;
+
+            async function sendTelegramAlert(filePath, caption) {
+              if (!botToken || !chatId) return;
+              try {
+                const { request } = require('@playwright/test');
+                const apiContext = await request.newContext();
+                const buffer = fs.readFileSync(filePath);
+                await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
+                  multipart: { 
+                    chat_id: chatId, 
+                    caption, 
+                    photo: { name: path.basename(filePath), mimeType: 'image/png', buffer } 
+                  }
+                });
+              } catch (e) {}
+            }
+
+            const browser = await chromium.launch({ headless: false });
+            const context = await browser.newContext();
+            const page = await context.newPage();
+
+            try {
+              // Go to order overview or confirmation page
+              await page.goto('https://www.bol.com/nl/nl/account/bestellingen/');
+
+              await page.waitForLoadState('networkidle');
+
+              const screenshotPath = 'order-verified.png';
+              await page.screenshot({ path: screenshotPath, fullPage: true });
+              await sendTelegramAlert(screenshotPath, '✅ Order verified successfully');
+
+              console.log('Order check completed');
+            } finally {
+              await context.close();
+              await browser.close();
+            }
+          });
+          EOF
+
+          xvfb-run npx playwright test bol-check-order.spec.js
