@@ -1209,3 +1209,10 @@
   used_to_login: false
   created_at: 2026-04-13 23:57:12 UTC
   last_login_at: null
+- email: stijnvanderwal@qrlfoundation.org
+  run_id: '24375898700'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-14 01:28:16 UTC
+  last_login_at: null
