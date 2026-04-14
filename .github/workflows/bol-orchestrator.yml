@@ -41,8 +41,15 @@ jobs:
     with:
       bol-email: ${{ needs.setup.outputs.bol-email }}
 
-  update-and-commit:
+  select-payment:
     needs: [setup, check-order]
+    uses: ./.github/workflows/bol-step-select-payment.yml
+    secrets: inherit
+    with:
+      bol-email: ${{ needs.setup.outputs.bol-email }}
+
+  update-and-commit:
+    needs: [setup, select-payment]
     uses: ./.github/workflows/bol-update-commit.yml
     secrets: inherit
     with:
