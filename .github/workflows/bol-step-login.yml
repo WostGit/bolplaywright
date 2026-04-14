@@ -1,0 +1,103 @@
+name: Bol - Step 1: Login
+
+on:
+  workflow_call:
+    inputs:
+      bol-email:
+        required: true
+        type: string
+
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BOL_EMAIL: ${{ inputs.bol-email }}
+      BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
+      PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Execute Login Step
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "================================================================="
+          echo " STEP 1: LOGIN"
+          echo "================================================================="
+
+          cat > bol-login.spec.js <<'EOF'
+          const { test, chromium } = require('@playwright/test');
+          const fs = require('fs');
+          const path = require('path');
+
+          test('Bol Login', async () => {
+            const email = process.env.BOL_EMAIL;
+            const password = process.env.BOL_PASSWORD;
+            const botToken = process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = process.env.TELEGRAM_CHAT_ID;
+
+            async function sendTelegramAlert(filePath, caption) {
+              if (!botToken || !chatId) return;
+              try {
+                const { request } = require('@playwright/test');
+                const apiContext = await request.newContext();
+                const buffer = fs.readFileSync(filePath);
+                await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
+                  multipart: {
+                    chat_id: chatId,
+                    caption: caption,
+                    photo: { name: path.basename(filePath), mimeType: 'image/png', buffer }
+                  }
+                });
+              } catch (e) { console.error(e.message); }
+            }
+
+            const browser = await chromium.launch({ headless: false, args: ['--disable-blink-features=AutomationControlled'] });
+            const context = await browser.newContext({
+              locale: 'nl-NL',
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              proxy: { server: process.env.PROXY_SERVER, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD }
+            });
+            const page = await context.newPage();
+            page.setDefaultTimeout(40000);
+
+            try {
+              await page.goto('https://www.bol.com/nl/nl/');
+              await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
+              await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
+              await page.waitForURL('**/login**');
+
+              await page.getByRole('textbox', { name: 'E-mailadres' }).fill(email);
+              await page.getByRole('textbox', { name: 'Wachtwoord' }).fill(password);
+
+              const prepPath = 'login-credentials-filled.png';
+              await page.screenshot({ path: prepPath });
+              await sendTelegramAlert(prepPath, '[Step 1] Credentials filled');
+
+              await page.getByRole('button', { name: 'Inloggen' }).click();
+
+              await Promise.race([
+                page.waitForURL('https://www.bol.com/nl/nl/'),
+                page.waitForURL('**/account/overzicht**')
+              ]);
+
+              await page.waitForLoadState('networkidle');
+              await page.screenshot({ path: 'login-success.png' });
+              await sendTelegramAlert('login-success.png', '✅ Login Successful');
+              console.log('Login completed successfully');
+            } finally {
+              await context.close();
+              await browser.close();
+            }
+          });
+          EOF
+
+          xvfb-run npx playwright test bol-login.spec.js
