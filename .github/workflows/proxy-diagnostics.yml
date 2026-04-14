@@ -30,7 +30,7 @@ jobs:
           npx playwright install --with-deps chromium
           mkdir -p logs out
 
-      - name: Normalize proxy and print non-secret diagnostics
+      - name: Normalize proxy and print safe diagnostics
         shell: bash
         run: |
           set -euo pipefail
@@ -44,14 +44,11 @@ jobs:
               return
             fi
             case "$p" in
-              https://*)
-                echo "http://${p#https://}"
-                ;;
-              http://*|socks5://*)
+              http://*|https://*|socks5://*)
                 echo "$p"
                 ;;
               *)
-                echo "http://$p"
+                echo "https://$p"
                 ;;
             esac
           }
@@ -67,9 +64,7 @@ jobs:
             echo "NORMALIZED_PROXY_SCHEME=${NORMALIZED_PROXY%%://*}"
           } | tee logs/proxy-env.txt
 
-          {
-            echo "NORMALIZED_PROXY=$NORMALIZED_PROXY"
-          } >> "$GITHUB_ENV"
+          echo "NORMALIZED_PROXY=$NORMALIZED_PROXY" >> "$GITHUB_ENV"
 
       - name: Direct connection sanity checks
         shell: bash
@@ -99,26 +94,33 @@ jobs:
             exit 0
           fi
 
-          CURL_PROXY_ARGS=(--proxy "$NORMALIZED_PROXY")
-          if [ -n "${PROXY_USERNAME:-}" ] || [ -n "${PROXY_PASSWORD:-}" ]; then
-            CURL_PROXY_ARGS+=(--proxy-user "${PROXY_USERNAME:-}:${PROXY_PASSWORD:-}")
-          fi
-
           {
-            echo "===== PROXY CURL: HTTP example.com ====="
-            curl -v -L --max-time 40 "${CURL_PROXY_ARGS[@]}" http://example.com || true
-
-            echo
             echo "===== PROXY CURL: HTTPS example.com ====="
-            curl -v -L --max-time 40 "${CURL_PROXY_ARGS[@]}" https://example.com || true
+            curl -v -L --max-time 40 \
+              --proxy "$NORMALIZED_PROXY" \
+              --proxy-user "${PROXY_USERNAME:-}:${PROXY_PASSWORD:-}" \
+              https://example.com || true
 
             echo
             echo "===== PROXY CURL: HTTPS api.ipify.org ====="
-            curl -v -L --max-time 40 "${CURL_PROXY_ARGS[@]}" https://api.ipify.org || true
+            curl -v -L --max-time 40 \
+              --proxy "$NORMALIZED_PROXY" \
+              --proxy-user "${PROXY_USERNAME:-}:${PROXY_PASSWORD:-}" \
+              https://api.ipify.org || true
 
             echo
             echo "===== PROXY CURL: HTTPS httpbin ip ====="
-            curl -v -L --max-time 40 "${CURL_PROXY_ARGS[@]}" https://httpbin.org/ip || true
+            curl -v -L --max-time 40 \
+              --proxy "$NORMALIZED_PROXY" \
+              --proxy-user "${PROXY_USERNAME:-}:${PROXY_PASSWORD:-}" \
+              https://httpbin.org/ip || true
+
+            echo
+            echo "===== PROXY CURL: HTTPS bol.com ====="
+            curl -v -L --max-time 40 \
+              --proxy "$NORMALIZED_PROXY" \
+              --proxy-user "${PROXY_USERNAME:-}:${PROXY_PASSWORD:-}" \
+              https://www.bol.com/nl/nl/ || true
           } 2>&1 | tee logs/proxy-curl.txt
 
       - name: OpenSSL CONNECT/TLS diagnostics through proxy
@@ -152,48 +154,6 @@ jobs:
               -brief || true
           } 2>&1 | tee logs/proxy-openssl.txt
 
-      - name: Node HTTPS diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cat > out/node-https-diagnostics.js <<'EOF'
-          const https = require('https');
-          const fs = require('fs');
-
-          function log(msg) {
-            console.log(msg);
-            fs.appendFileSync('logs/node-https.txt', msg + '\n');
-          }
-
-          async function testDirect(url) {
-            return new Promise((resolve) => {
-              log(`DIRECT TEST ${url}`);
-              const req = https.get(url, (res) => {
-                log(`DIRECT STATUS ${url}: ${res.statusCode}`);
-                res.resume();
-                res.on('end', resolve);
-              });
-              req.on('error', (err) => {
-                log(`DIRECT ERROR ${url}: ${err.message}`);
-                resolve();
-              });
-              req.setTimeout(30000, () => {
-                log(`DIRECT TIMEOUT ${url}`);
-                req.destroy(new Error('timeout'));
-              });
-            });
-          }
-
-          (async () => {
-            await testDirect('https://example.com');
-            await testDirect('https://api.ipify.org');
-            await testDirect('https://www.bol.com/nl/nl/');
-          })();
-          EOF
-
-          node out/node-https-diagnostics.js
-
       - name: Playwright proxy diagnostics
         shell: bash
         run: |
@@ -204,16 +164,15 @@ jobs:
           const fs = require('fs');
 
           const rawProxy = process.env.PROXY_SERVER?.trim();
+
           function normalizeProxyServer(proxyValue) {
             if (!proxyValue) return undefined;
-            if (proxyValue.startsWith('https://')) {
-              return 'http://' + proxyValue.slice('https://'.length);
-            }
-            if (proxyValue.startsWith('http://') || proxyValue.startsWith('socks5://')) {
+            if (/^[a-zA-Z]+:\/\//.test(proxyValue)) {
               return proxyValue;
             }
-            return `http://${proxyValue}`;
+            return `https://${proxyValue}`;
           }
+
           const normalizedProxy = normalizeProxyServer(rawProxy);
 
           function log(msg) {
@@ -226,6 +185,8 @@ jobs:
             log(`useProxy=${useProxy}`);
             log(`targetUrl=${targetUrl}`);
             log(`normalizedProxy=${normalizedProxy || 'none'}`);
+            log(`proxyUsernamePresent=${!!process.env.PROXY_USERNAME}`);
+            log(`proxyPasswordPresent=${!!process.env.PROXY_PASSWORD}`);
 
             const browser = await chromium.launch({
               headless: true,
@@ -248,9 +209,11 @@ jobs:
               const f = req.failure();
               log(`[${label}] REQUEST FAILED ${req.method()} ${req.url()} :: ${f ? f.errorText : 'unknown'}`);
             });
+
             page.on('response', res => {
               log(`[${label}] RESPONSE ${res.status()} ${res.url()}`);
             });
+
             page.on('framenavigated', frame => {
               if (frame === page.mainFrame()) {
                 log(`[${label}] NAVIGATED ${frame.url()}`);
@@ -298,10 +261,10 @@ jobs:
 
           {
             echo "===== QUICK INTERPRETATION GUIDE ====="
-            echo "1. If direct HTTPS works and proxy HTTPS fails, the proxy is broken for TLS/CONNECT."
-            echo "2. If proxy HTTP works but proxy HTTPS fails, the proxy endpoint/scheme is wrong or provider does not support HTTPS tunneling correctly."
-            echo "3. If even example.com fails through proxy, do not continue testing bol.com with that proxy."
-            echo "4. If attempt without proxy works, use no proxy or replace the proxy provider."
+            echo "1. If direct HTTPS works and proxy HTTPS works, the proxy is fine."
+            echo "2. If curl works but Playwright fails, compare scheme and credential fields exactly."
+            echo "3. If local curl works but GitHub curl fails, secrets or runner/network behavior differ."
+            echo "4. For your Evomi setup, keep https:// if that is what works locally."
           } | tee logs/summary.txt
 
       - name: Upload diagnostic logs
