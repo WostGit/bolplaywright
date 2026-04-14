@@ -1,4 +1,4 @@
-name: "Bol - Step 4: Check / Verify Order"
+name: "Bol - Step 4: Select Budbee Delivery Option"
 
 on:
   workflow_call:
@@ -10,7 +10,7 @@ on:
 jobs:
   check-order:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
       PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
       PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
@@ -38,7 +38,7 @@ jobs:
           npm install @playwright/test
           npx playwright install --with-deps chromium
 
-      - name: Execute Check Order Step
+      - name: Execute Budbee Selection Step
         shell: bash
         run: |
           set -euo pipefail
@@ -48,7 +48,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          test('Verify Order', async () => {
+          test('Select Budbee delivery option', async () => {
             test.setTimeout(120000);
 
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -100,19 +100,17 @@ jobs:
             page.setDefaultNavigationTimeout(60000);
 
             try {
-              // Open the checkout page directly from saved auth/session
               await page.goto('https://www.bol.com/nl/nl/checkout/', {
                 waitUntil: 'domcontentloaded',
                 timeout: 60000
               }).catch(async () => {
-                // Fallback if bol redirects through basket/order path
                 await page.goto('https://www.bol.com/nl/nl/basket/', {
                   waitUntil: 'domcontentloaded',
                   timeout: 60000
                 });
               });
 
-              await snap(page, '01-checkout-opened', `[Step 4] Checkout page opened: ${page.url()}`);
+              await snap(page, '01-checkout-opened', `[Step 4] Checkout opened: ${page.url()}`);
 
               if (/login/i.test(page.url())) {
                 throw new Error(`Redirected to login page. Auth state missing or expired. URL: ${page.url()}`);
@@ -121,32 +119,53 @@ jobs:
               await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
               await snap(page, '02-cookies-handled', '[Step 4] Cookies handled');
 
-              await page.waitForTimeout(3000);
-              await snap(page, '03-render-wait', '[Step 4] Checkout render wait completed');
+              const otherAddressBtn = page.getByRole('button', { name: /^Ander bezorgadres of afhaalpunt$/i });
+              await expect(otherAddressBtn).toBeVisible({ timeout: 20000 });
+              await otherAddressBtn.click();
 
-              const placeOrderBtn = page
-                .locator('a, button')
-                .filter({ hasText: /^Bestellen en betalen$/i })
-                .first();
+              await snap(page, '03-opened-dialog', '[Step 4] Opened delivery-point dialog');
 
-              await expect(placeOrderBtn).toBeVisible({ timeout: 20000 });
-              await snap(page, '04-place-order-visible', '[Step 4] Found "Bestellen en betalen"');
+              const dialog = page.locator('[role="dialog"]').filter({ hasText: /Je bezorgadressen/i }).first();
+              await expect(dialog).toBeVisible({ timeout: 20000 });
 
-              await placeOrderBtn.click({ timeout: 20000 });
-              await snap(page, '05-place-order-clicked', '[Step 4] Clicked "Bestellen en betalen"');
+              const pickupTab = dialog.getByRole('tab', { name: /^Afhaalpunten$/i });
+              await expect(pickupTab).toBeVisible({ timeout: 10000 });
 
-              // Wait for any post-submit transition
-              await Promise.race([
-                page.waitForURL(/bestelling|bevestiging|order|payment|betalen/i, { timeout: 30000 }),
-                page.waitForTimeout(5000)
-              ]);
+              const selected = await pickupTab.getAttribute('aria-selected');
+              if (selected !== 'true') {
+                await pickupTab.click();
+              }
 
-              await snap(page, '06-after-place-order', `✅ [Step 4] After clicking order button: ${page.url()}`);
+              await snap(page, '04-pickup-tab-active', '[Step 4] Afhaalpunten tab active');
+
+              const activePanel = dialog.locator('[role="tabpanel"][data-state="active"]').first();
+              await expect(activePanel).toBeVisible({ timeout: 10000 });
+
+              // Budbee entries appear as li ids starting with BUNUR
+              // PostNL entries appear as li ids starting with PNL
+              const enabledBudbeeButtons = activePanel.locator('li[id^="BUNUR"] > button:not([disabled])');
+
+              const budbeeCount = await enabledBudbeeButtons.count();
+              if (budbeeCount === 0) {
+                await snap(page, '99-no-enabled-budbee', '❌ [Step 4] No enabled Budbee pickup points found');
+                throw new Error('No enabled Budbee pickup points found in active Afhaalpunten list');
+              }
+
+              const firstBudbee = enabledBudbeeButtons.first();
+              const firstBudbeeText = (await firstBudbee.innerText()).trim().replace(/\s+/g, ' ');
+
+              await firstBudbee.scrollIntoViewIfNeeded();
+              await snap(page, '05-before-budbee-click', `[Step 4] First enabled Budbee option: ${firstBudbeeText}`);
+
+              await firstBudbee.click({ timeout: 15000 });
+
+              await page.waitForTimeout(2000);
+              await snap(page, '06-budbee-selected', `✅ [Step 4] Selected Budbee option: ${firstBudbeeText}`);
 
               await context.storageState({ path: 'storage-state.json' });
-              console.log(`Order step completed successfully: ${page.url()}`);
+              console.log(`Budbee selection completed successfully: ${firstBudbeeText}`);
             } catch (error) {
-              await snap(page, '99-step4-error', `❌ [Step 4] Failed: ${error.message}`);
+              await snap(page, '98-step4-error', `❌ [Step 4] Failed: ${error.message}`);
               throw error;
             } finally {
               await context.close();
