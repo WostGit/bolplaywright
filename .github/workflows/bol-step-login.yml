@@ -43,7 +43,7 @@ jobs:
           echo "================================================================="
 
           cat > bol-login.spec.js <<'EOF'
-          const { test, chromium, request } = require('@playwright/test');
+          const { test, expect, chromium, request } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
 
@@ -61,11 +61,11 @@ jobs:
                 await apiContext.post(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
                   multipart: {
                     chat_id: chatId,
-                    caption: caption,
+                    caption,
                     photo: {
                       name: path.basename(filePath),
                       mimeType: 'image/png',
-                      buffer: buffer
+                      buffer
                     }
                   }
                 });
@@ -74,12 +74,16 @@ jobs:
               }
             }
 
-            // Launching in headless mode is standard for CI
-            const browser = await chromium.launch({ 
-              headless: true, 
-              args: ['--disable-blink-features=AutomationControlled'] 
+            async function snap(page, file, caption, fullPage = true) {
+              await page.screenshot({ path: file, fullPage });
+              await sendTelegramAlert(file, caption);
+            }
+
+            const browser = await chromium.launch({
+              headless: true,
+              args: ['--disable-blink-features=AutomationControlled']
             });
-            
+
             const context = await browser.newContext({
               locale: 'nl-NL',
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -89,46 +93,42 @@ jobs:
                 password: process.env.PROXY_PASSWORD
               } : undefined
             });
-            
+
             const page = await context.newPage();
             page.setDefaultTimeout(40000);
 
             try {
               await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded' });
-              
-              // Handle Cookies
+              await snap(page, '01-home.png', '[Step 1] Home page loaded');
+
               await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
-              
-              // Navigate to Login
+              await snap(page, '02-cookies-handled.png', '[Step 1] Cookies handled');
+
               await page.getByRole('link', { name: /Inloggen/i }).first().click({ force: true });
-              await page.waitForURL('**/login**');
+              await page.waitForURL('**/login**', { timeout: 30000 });
+              await snap(page, '03-login-page.png', '[Step 1] Login page opened');
 
-              // Fill Credentials
-              await page.getByRole('textbox', { name: 'E-mailadres' }).fill(email);
-              await page.getByRole('textbox', { name: 'Wachtwoord' }).fill(password);
+              await page.getByRole('textbox', { name: /E-mailadres/i }).fill(email);
+              await page.getByRole('textbox', { name: /Wachtwoord/i }).fill(password);
+              await snap(page, '04-credentials-filled.png', '[Step 1] Credentials filled');
 
-              const prepPath = 'login-credentials-filled.png';
-              await page.screenshot({ path: prepPath });
-              await sendTelegramAlert(prepPath, '[Step 1] Credentials filled');
+              await page.getByRole('button', { name: /^Inloggen$/i }).click();
+              await snap(page, '05-login-submitted.png', '[Step 1] Login submitted');
 
-              // Click Login
-              await page.getByRole('button', { name: 'Inloggen' }).click();
-
-              // Wait for success indicators
               await Promise.race([
                 page.waitForURL('https://www.bol.com/nl/nl/**', { timeout: 30000 }),
                 page.waitForURL('**/account/overzicht**', { timeout: 30000 })
               ]);
 
               await page.waitForLoadState('networkidle');
-              await page.screenshot({ path: 'login-success.png' });
-              await sendTelegramAlert('login-success.png', '✅ Login Successful');
+              await snap(page, '06-login-success.png', '✅ [Step 1] Login successful');
 
-              console.log('Login completed successfully');
+              await context.storageState({ path: 'storage-state.json' });
+              console.log('Saved storage-state.json');
             } catch (error) {
-              const errPath = 'error-screenshot.png';
-              await page.screenshot({ path: errPath });
-              await sendTelegramAlert(errPath, `❌ Login Failed: ${error.message}`);
+              try {
+                await snap(page, 'error-login.png', `❌ [Step 1] Login failed: ${error.message}`);
+              } catch {}
               throw error;
             } finally {
               await context.close();
@@ -137,5 +137,11 @@ jobs:
           });
           EOF
 
-          # xvfb-run is only strictly necessary if headless: false
           npx playwright test bol-login.spec.js
+
+      - name: Upload auth state
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-auth-state
+          path: storage-state.json
+          if-no-files-found: error
