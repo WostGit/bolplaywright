@@ -56,9 +56,19 @@ jobs:
             const chatId = process.env.TELEGRAM_CHAT_ID;
 
             const rawProxy = process.env.PROXY_SERVER?.trim();
-            const normalizedProxy = rawProxy
-              ? (/^[a-zA-Z]+:\/\//.test(rawProxy) ? rawProxy : `http://${rawProxy}`)
-              : undefined;
+
+            function normalizeProxyServer(proxyValue) {
+              if (!proxyValue) return undefined;
+              if (proxyValue.startsWith('https://')) {
+                return 'http://' + proxyValue.slice('https://'.length);
+              }
+              if (proxyValue.startsWith('http://') || proxyValue.startsWith('socks5://')) {
+                return proxyValue;
+              }
+              return `http://${proxyValue}`;
+            }
+
+            const normalizedProxy = normalizeProxyServer(rawProxy);
 
             function now() {
               return new Date().toISOString();
@@ -123,8 +133,6 @@ jobs:
                   stage,
                   url: page.url(),
                   title: await page.title().catch(() => null),
-                  userAgent: await page.evaluate(() => navigator.userAgent).catch(() => null),
-                  online: await page.evaluate(() => navigator.onLine).catch(() => null),
                   normalizedProxyPresent: !!normalizedProxy,
                   normalizedProxyScheme: normalizedProxy ? normalizedProxy.split('://')[0] : null
                 };
@@ -137,24 +145,16 @@ jobs:
             }
 
             function attachPageLogging(page, attempt) {
-              page.on('console', msg => {
-                logLine(`[Attempt ${attempt}] PAGE CONSOLE ${msg.type().toUpperCase()}: ${msg.text()}`);
-              });
-
-              page.on('pageerror', err => {
-                logLine(`[Attempt ${attempt}] PAGE ERROR: ${err.message}`);
-              });
-
               page.on('request', req => {
                 const url = req.url();
-                if (/bol\.com|chrome-error|telegram|ideal|wero|checkout|login|example\.com/i.test(url)) {
+                if (/bol\.com|chrome-error|example\.com|telegram/i.test(url)) {
                   logLine(`[Attempt ${attempt}] REQUEST ${req.method()} ${url}`);
                 }
               });
 
-              page.on('response', async res => {
+              page.on('response', res => {
                 const url = res.url();
-                if (/bol\.com|chrome-error|checkout|login|example\.com/i.test(url)) {
+                if (/bol\.com|chrome-error|example\.com/i.test(url)) {
                   logLine(`[Attempt ${attempt}] RESPONSE ${res.status()} ${url}`);
                 }
               });
@@ -168,6 +168,10 @@ jobs:
                 if (frame === page.mainFrame()) {
                   logLine(`[Attempt ${attempt}] MAIN FRAME NAVIGATED TO: ${frame.url()}`);
                 }
+              });
+
+              page.on('pageerror', err => {
+                logLine(`[Attempt ${attempt}] PAGE ERROR: ${err.message}`);
               });
             }
 
@@ -185,37 +189,6 @@ jobs:
                 logLine(`[Attempt ${attempt}] [HEALTHCHECK] ${label} failed: ${e.message}`);
                 await snap(page, `healthcheck-${label}-failed-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Healthcheck failed: ${label}`);
                 return false;
-              }
-            }
-
-            async function diagnoseSslError(page, attempt, error, useProxy) {
-              const message = String(error && error.message ? error.message : error);
-              const currentUrl = (() => {
-                try { return page.url(); } catch { return 'unavailable'; }
-              })();
-
-              logLine(`[Attempt ${attempt}] DIAGNOSE START`);
-              logLine(`[Attempt ${attempt}] Error message: ${message}`);
-              logLine(`[Attempt ${attempt}] Current URL: ${currentUrl}`);
-              logLine(`[Attempt ${attempt}] Proxy enabled this attempt: ${useProxy ? 'yes' : 'no'}`);
-              logLine(`[Attempt ${attempt}] Raw proxy present: ${rawProxy ? 'yes' : 'no'}`);
-              logLine(`[Attempt ${attempt}] Normalized proxy present: ${normalizedProxy ? 'yes' : 'no'}`);
-              if (normalizedProxy) {
-                logLine(`[Attempt ${attempt}] Normalized proxy scheme: ${normalizedProxy.split('://')[0]}`);
-                logLine(`[Attempt ${attempt}] Normalized proxy value: ${normalizedProxy}`);
-              }
-              logLine(`[Attempt ${attempt}] Proxy username present: ${process.env.PROXY_USERNAME ? 'yes' : 'no'}`);
-              logLine(`[Attempt ${attempt}] Proxy password present: ${process.env.PROXY_PASSWORD ? 'yes' : 'no'}`);
-
-              await dumpMeta(page, attempt, 'ssl-diagnose');
-              await dumpHtml(page, `attempt-${attempt}-ssl-diagnose`);
-              await snap(page, `ssl-diagnose-attempt-${attempt}`, `⚠️ [Step 1][Attempt ${attempt}] SSL/proxy diagnose screen`);
-
-              if (message.includes('ERR_SSL_PROTOCOL_ERROR')) {
-                logLine(`[Attempt ${attempt}] Explicit ERR_SSL_PROTOCOL_ERROR detected`);
-              }
-              if (currentUrl.startsWith('chrome-error://')) {
-                logLine(`[Attempt ${attempt}] Browser is on Chromium internal error page`);
               }
             }
 
@@ -260,11 +233,6 @@ jobs:
 
               await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
 
-              context.on('requestfailed', req => {
-                const failure = req.failure();
-                logLine(`[Attempt ${attempt}] CONTEXT REQUEST FAILED ${req.method()} ${req.url()} :: ${failure ? failure.errorText : 'unknown error'}`);
-              });
-
               const page = await context.newPage();
               attachPageLogging(page, attempt);
 
@@ -272,7 +240,6 @@ jobs:
               page.setDefaultNavigationTimeout(60000);
 
               try {
-                logLine(`[Attempt ${attempt}] Running HTTPS healthcheck via example.com`);
                 await testUrl(page, 'https://example.com', 'example', attempt);
 
                 logLine(`[Attempt ${attempt}] Navigating to home page`);
@@ -281,7 +248,6 @@ jobs:
                   timeout: 60000
                 });
 
-                logLine(`[Attempt ${attempt}] After goto URL: ${page.url()}`);
                 await dumpMeta(page, attempt, 'after-home-goto');
                 await dumpHtml(page, `attempt-${attempt}-after-home-goto`);
                 await snap(page, `01-home-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Home page loaded`);
@@ -290,69 +256,45 @@ jobs:
                   throw new Error(`Landed on browser error page immediately after home navigation: ${page.url()}`);
                 }
 
-                const bodyTextHome = await page.locator('body').innerText().catch(() => '');
-                fs.writeFileSync(`logs/body-home-attempt-${attempt}.txt`, bodyTextHome, 'utf8');
-                logLine(`[Attempt ${attempt}] Saved home body text`);
-
-                logLine(`[Attempt ${attempt}] Trying cookie button`);
-                await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click({ timeout: 8000 }).catch(err => {
-                  logLine(`[Attempt ${attempt}] Cookie click skipped/failed: ${err.message}`);
-                });
+                await page.getByRole('button', { name: /Accepteren|Alles accepteren/i }).click().catch(() => {});
                 await snap(page, `02-cookies-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Cookies handled`);
 
-                logLine(`[Attempt ${attempt}] Searching for login link`);
                 const loginLink = page.getByRole('link', { name: /Inloggen/i }).first();
                 await expect(loginLink).toBeVisible({ timeout: 15000 });
-                await snap(page, `03-before-login-click-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login link visible`);
-
                 await loginLink.click({ force: true });
-                logLine(`[Attempt ${attempt}] Login link clicked, current URL: ${page.url()}`);
 
                 await page.waitForURL(/login/i, { timeout: 30000 });
-                logLine(`[Attempt ${attempt}] Reached login page: ${page.url()}`);
-
                 await dumpMeta(page, attempt, 'login-page');
                 await dumpHtml(page, `attempt-${attempt}-login-page`);
-                await snap(page, `04-login-page-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login page opened`);
+                await snap(page, `03-login-page-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login page opened`);
 
                 const emailBox = page.getByRole('textbox', { name: /E-mailadres/i });
                 const passwordBox = page.getByRole('textbox', { name: /Wachtwoord/i });
                 await expect(emailBox).toBeVisible({ timeout: 15000 });
                 await expect(passwordBox).toBeVisible({ timeout: 15000 });
 
-                logLine(`[Attempt ${attempt}] Filling email`);
                 await emailBox.fill(email);
-                await snap(page, `05-email-filled-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Email filled`);
+                await snap(page, `04-email-filled-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Email filled`);
 
-                logLine(`[Attempt ${attempt}] Filling password`);
                 await passwordBox.fill(password);
 
                 const loginButton = page.getByRole('button', { name: /^Inloggen$/i });
                 await expect(loginButton).toBeVisible({ timeout: 15000 });
-                await snap(page, `06-before-submit-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Ready to submit login`);
-
-                logLine(`[Attempt ${attempt}] Clicking submit`);
                 await loginButton.click();
-                await snap(page, `07-login-submitted-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login submitted`);
+                await snap(page, `05-login-submitted-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Login submitted`);
 
-                logLine(`[Attempt ${attempt}] Waiting for post-login URL`);
                 await Promise.race([
                   page.waitForURL('https://www.bol.com/nl/nl/**', { timeout: 45000 }),
                   page.waitForURL('**/account/overzicht**', { timeout: 45000 }),
                   page.waitForURL('**/mijnbol/**', { timeout: 45000 })
                 ]);
 
-                logLine(`[Attempt ${attempt}] Post-login URL reached: ${page.url()}`);
                 await page.waitForTimeout(3000);
-
                 await dumpMeta(page, attempt, 'login-success');
                 await dumpHtml(page, `attempt-${attempt}-login-success`);
-                await snap(page, `08-login-success-attempt-${attempt}`, `✅ [Step 1][Attempt ${attempt}] Login successful`);
+                await snap(page, `06-login-success-attempt-${attempt}`, `✅ [Step 1][Attempt ${attempt}] Login successful`);
 
-                logLine(`[Attempt ${attempt}] Saving storage state`);
                 await context.storageState({ path: 'storage-state.json' });
-
-                logLine(`[Attempt ${attempt}] Stopping trace`);
                 await context.tracing.stop({ path: `traces/login-attempt-${attempt}-success-trace.zip` });
 
                 await context.close();
@@ -366,18 +308,12 @@ jobs:
                 await dumpHtml(page, `attempt-${attempt}-login-error`);
                 await snap(page, `99-login-error-attempt-${attempt}`, `❌ [Step 1][Attempt ${attempt}] Login failed: ${message}`);
 
-                if (message.includes('ERR_SSL_PROTOCOL_ERROR') || page.url().startsWith('chrome-error://')) {
-                  await diagnoseSslError(page, attempt, error, useProxy);
-                }
-
                 try {
                   await context.tracing.stop({ path: `traces/login-attempt-${attempt}-error-trace.zip` });
-                } catch (traceErr) {
-                  logLine(`[Attempt ${attempt}] Trace stop failed: ${traceErr.message}`);
-                }
+                } catch {}
 
-                await context.close().catch(e => logLine(`[Attempt ${attempt}] Context close error: ${e.message}`));
-                await browser.close().catch(e => logLine(`[Attempt ${attempt}] Browser close error: ${e.message}`));
+                await context.close().catch(() => {});
+                await browser.close().catch(() => {});
                 return false;
               }
             }
