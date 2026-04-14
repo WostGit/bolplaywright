@@ -1,10 +1,10 @@
-name: Bol - Setup (Extract Email + Prepare Dependencies)
+name: Bol - Setup (Extract Email + Prepare)
 
 on:
   workflow_call:
     outputs:
       bol-email:
-        description: "The selected unused email address"
+        description: "Selected unused email"
         value: ${{ jobs.setup.outputs.bol-email }}
 
 jobs:
@@ -18,9 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ========================
-      # Email Extraction
-      # ========================
+      # --- Email Extraction ---
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -59,19 +57,17 @@ jobs:
                   break
 
           if not target_account:
-              print("[FATAL ERROR] No unused accounts available for login!")
+              print("[FATAL ERROR] No unused accounts available!")
               sys.exit(1)
 
           email = target_account["email"]
-          print(f"[SUCCESS] Target account localized: {email}")
+          print(f"[SUCCESS] Target account: {email}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"bol-email={email}\n")
           PY
 
-      # ========================
-      # Prepare Project & Dependencies
-      # ========================
+      # --- Prepare Project ---
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -115,13 +111,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      - name: Install Playwright Chromium with proper deps
+      - name: Install Playwright Chromium
         shell: bash
         run: |
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
             echo "[CACHE HIT] Skipping browser download..."
             npx playwright install-deps chromium
           else
-            echo "[CACHE MISS] Downloading browser and dependencies..."
+            echo "[CACHE MISS] Downloading browser..."
             npx playwright install --with-deps chromium
           fi
