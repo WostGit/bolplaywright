@@ -55,6 +55,11 @@ jobs:
             const botToken = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
 
+            const rawProxy = process.env.PROXY_SERVER?.trim();
+            const normalizedProxy = rawProxy
+              ? (/^[a-zA-Z]+:\/\//.test(rawProxy) ? rawProxy : `http://${rawProxy}`)
+              : undefined;
+
             function now() {
               return new Date().toISOString();
             }
@@ -120,6 +125,8 @@ jobs:
                   title: await page.title().catch(() => null),
                   userAgent: await page.evaluate(() => navigator.userAgent).catch(() => null),
                   online: await page.evaluate(() => navigator.onLine).catch(() => null),
+                  normalizedProxyPresent: !!normalizedProxy,
+                  normalizedProxyScheme: normalizedProxy ? normalizedProxy.split('://')[0] : null
                 };
                 const file = `logs/meta-attempt-${attempt}-${stage}.json`;
                 fs.writeFileSync(file, JSON.stringify(meta, null, 2), 'utf8');
@@ -140,14 +147,14 @@ jobs:
 
               page.on('request', req => {
                 const url = req.url();
-                if (/bol\.com|chrome-error|telegram|ideal|wero|checkout|login/i.test(url)) {
+                if (/bol\.com|chrome-error|telegram|ideal|wero|checkout|login|example\.com/i.test(url)) {
                   logLine(`[Attempt ${attempt}] REQUEST ${req.method()} ${url}`);
                 }
               });
 
               page.on('response', async res => {
                 const url = res.url();
-                if (/bol\.com|chrome-error|checkout|login/i.test(url)) {
+                if (/bol\.com|chrome-error|checkout|login|example\.com/i.test(url)) {
                   logLine(`[Attempt ${attempt}] RESPONSE ${res.status()} ${url}`);
                 }
               });
@@ -164,7 +171,24 @@ jobs:
               });
             }
 
-            async function diagnoseSslError(page, attempt, error) {
+            async function testUrl(page, url, label, attempt) {
+              try {
+                logLine(`[Attempt ${attempt}] [HEALTHCHECK] Opening ${label}: ${url}`);
+                const response = await page.goto(url, {
+                  waitUntil: 'domcontentloaded',
+                  timeout: 30000
+                });
+                logLine(`[Attempt ${attempt}] [HEALTHCHECK] ${label} success. Final URL=${page.url()} status=${response ? response.status() : 'no-response'}`);
+                await snap(page, `healthcheck-${label}-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Healthcheck ok: ${label}`);
+                return true;
+              } catch (e) {
+                logLine(`[Attempt ${attempt}] [HEALTHCHECK] ${label} failed: ${e.message}`);
+                await snap(page, `healthcheck-${label}-failed-attempt-${attempt}`, `[Step 1][Attempt ${attempt}] Healthcheck failed: ${label}`);
+                return false;
+              }
+            }
+
+            async function diagnoseSslError(page, attempt, error, useProxy) {
               const message = String(error && error.message ? error.message : error);
               const currentUrl = (() => {
                 try { return page.url(); } catch { return 'unavailable'; }
@@ -173,12 +197,15 @@ jobs:
               logLine(`[Attempt ${attempt}] DIAGNOSE START`);
               logLine(`[Attempt ${attempt}] Error message: ${message}`);
               logLine(`[Attempt ${attempt}] Current URL: ${currentUrl}`);
-              logLine(`[Attempt ${attempt}] Proxy server present: ${process.env.PROXY_SERVER ? 'yes' : 'no'}`);
-              if (process.env.PROXY_SERVER) {
-                logLine(`[Attempt ${attempt}] Proxy server value: ${process.env.PROXY_SERVER}`);
-                logLine(`[Attempt ${attempt}] Proxy username present: ${process.env.PROXY_USERNAME ? 'yes' : 'no'}`);
-                logLine(`[Attempt ${attempt}] Proxy password present: ${process.env.PROXY_PASSWORD ? 'yes' : 'no'}`);
+              logLine(`[Attempt ${attempt}] Proxy enabled this attempt: ${useProxy ? 'yes' : 'no'}`);
+              logLine(`[Attempt ${attempt}] Raw proxy present: ${rawProxy ? 'yes' : 'no'}`);
+              logLine(`[Attempt ${attempt}] Normalized proxy present: ${normalizedProxy ? 'yes' : 'no'}`);
+              if (normalizedProxy) {
+                logLine(`[Attempt ${attempt}] Normalized proxy scheme: ${normalizedProxy.split('://')[0]}`);
+                logLine(`[Attempt ${attempt}] Normalized proxy value: ${normalizedProxy}`);
               }
+              logLine(`[Attempt ${attempt}] Proxy username present: ${process.env.PROXY_USERNAME ? 'yes' : 'no'}`);
+              logLine(`[Attempt ${attempt}] Proxy password present: ${process.env.PROXY_PASSWORD ? 'yes' : 'no'}`);
 
               await dumpMeta(page, attempt, 'ssl-diagnose');
               await dumpHtml(page, `attempt-${attempt}-ssl-diagnose`);
@@ -197,7 +224,11 @@ jobs:
               logLine(`Starting login attempt ${attempt}`);
               logLine(`BOL_EMAIL present: ${email ? 'yes' : 'no'}`);
               logLine(`BOL_PASSWORD present: ${password ? 'yes' : 'no'}`);
-              logLine(`PROXY_SERVER present: ${process.env.PROXY_SERVER ? 'yes' : 'no'}`);
+              logLine(`RAW PROXY present: ${rawProxy ? 'yes' : 'no'}`);
+              logLine(`NORMALIZED PROXY present: ${normalizedProxy ? 'yes' : 'no'}`);
+              if (normalizedProxy) {
+                logLine(`NORMALIZED PROXY scheme: ${normalizedProxy.split('://')[0]}`);
+              }
               logLine(`TELEGRAM enabled: ${botToken && chatId ? 'yes' : 'no'}`);
               logLine(`============================================================`);
 
@@ -211,14 +242,17 @@ jobs:
                 ]
               });
 
+              const useProxy = attempt < 3;
+              logLine(`[Attempt ${attempt}] Using proxy this attempt: ${useProxy ? 'yes' : 'no'}`);
+
               const context = await browser.newContext({
                 locale: 'nl-NL',
                 viewport: { width: 1366, height: 768 },
                 ignoreHTTPSErrors: false,
                 recordVideo: { dir: 'traces/' },
                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                proxy: process.env.PROXY_SERVER ? {
-                  server: process.env.PROXY_SERVER,
+                proxy: useProxy && normalizedProxy ? {
+                  server: normalizedProxy,
                   username: process.env.PROXY_USERNAME,
                   password: process.env.PROXY_PASSWORD
                 } : undefined
@@ -238,6 +272,9 @@ jobs:
               page.setDefaultNavigationTimeout(60000);
 
               try {
+                logLine(`[Attempt ${attempt}] Running HTTPS healthcheck via example.com`);
+                await testUrl(page, 'https://example.com', 'example', attempt);
+
                 logLine(`[Attempt ${attempt}] Navigating to home page`);
                 await page.goto('https://www.bol.com/nl/nl/', {
                   waitUntil: 'domcontentloaded',
@@ -330,7 +367,7 @@ jobs:
                 await snap(page, `99-login-error-attempt-${attempt}`, `❌ [Step 1][Attempt ${attempt}] Login failed: ${message}`);
 
                 if (message.includes('ERR_SSL_PROTOCOL_ERROR') || page.url().startsWith('chrome-error://')) {
-                  await diagnoseSslError(page, attempt, error);
+                  await diagnoseSslError(page, attempt, error, useProxy);
                 }
 
                 try {
