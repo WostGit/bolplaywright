@@ -103,7 +103,7 @@ jobs:
                   });
 
                   await page.waitForTimeout(3000);
-                  await snap(page, `01-open-${attempt}-${Buffer.from(url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0,20)}`, `[Step 4][Attempt ${attempt}] Opened ${page.url()}`);
+                  await snap(page, `01-open-${attempt}`, `[Step 4][Attempt ${attempt}] Opened ${page.url()}`);
 
                   const currentUrl = page.url();
 
@@ -124,6 +124,46 @@ jobs:
               }
 
               throw lastError || new Error('Could not open any checkout-related page');
+            }
+
+            async function waitForPickupPoints(dialog, page, attempt) {
+              const pickupTab = dialog.getByRole('tab', { name: /^Afhaalpunten$/i });
+              await expect(pickupTab).toBeVisible({ timeout: 15000 });
+
+              const selected = await pickupTab.getAttribute('aria-selected');
+              if (selected !== 'true') {
+                await pickupTab.click();
+              }
+
+              await snap(page, `06-pickup-tab-${attempt}`, `[Step 4][Attempt ${attempt}] Afhaalpunten tab active`);
+
+              const activePanel = dialog.locator('[role="tabpanel"][data-state="active"]').first();
+              await expect(activePanel).toBeVisible({ timeout: 15000 });
+
+              const pickupList = activePanel.locator('ol[aria-labelledby="pickuppoints-label"], ol').first();
+              await expect(pickupList).toBeVisible({ timeout: 20000 });
+
+              await expect.poll(
+                async () => await pickupList.locator('li').count(),
+                {
+                  timeout: 30000,
+                  intervals: [1000, 1500, 2000, 2500]
+                }
+              ).toBeGreaterThan(0);
+
+              await snap(page, `07-pickup-list-loaded-${attempt}`, `[Step 4][Attempt ${attempt}] Pickup point list loaded`);
+
+              const enabledBudbeeButtons = activePanel.locator('li[id^="BUNUR"] > button:not([disabled])');
+
+              await expect.poll(
+                async () => await enabledBudbeeButtons.count(),
+                {
+                  timeout: 30000,
+                  intervals: [1000, 1500, 2000, 2500]
+                }
+              ).toBeGreaterThan(0);
+
+              return enabledBudbeeButtons;
             }
 
             async function trySelectBudbee(attempt) {
@@ -153,42 +193,25 @@ jobs:
                 const otherAddressBtn = page.getByRole('button', { name: /^Ander bezorgadres of afhaalpunt$/i });
                 await expect(otherAddressBtn).toBeVisible({ timeout: 20000 });
                 await otherAddressBtn.click();
-                await snap(page, `05-dialog-opened-attempt-${attempt}`, `[Step 4][Attempt ${attempt}] Opened delivery-point dialog`);
+
+                await snap(page, `05-dialog-open-triggered-${attempt}`, `[Step 4][Attempt ${attempt}] Clicked alternate pickup button`);
 
                 const dialog = page.locator('[role="dialog"]').filter({ hasText: /Je bezorgadressen/i }).first();
                 await expect(dialog).toBeVisible({ timeout: 20000 });
+                await snap(page, `05b-dialog-visible-${attempt}`, `[Step 4][Attempt ${attempt}] Delivery-point dialog visible`);
 
-                const pickupTab = dialog.getByRole('tab', { name: /^Afhaalpunten$/i });
-                await expect(pickupTab).toBeVisible({ timeout: 10000 });
-
-                const selected = await pickupTab.getAttribute('aria-selected');
-                if (selected !== 'true') {
-                  await pickupTab.click();
-                }
-
-                await snap(page, `06-pickup-tab-attempt-${attempt}`, `[Step 4][Attempt ${attempt}] Afhaalpunten tab active`);
-
-                const activePanel = dialog.locator('[role="tabpanel"][data-state="active"]').first();
-                await expect(activePanel).toBeVisible({ timeout: 10000 });
-
-                const enabledBudbeeButtons = activePanel.locator('li[id^="BUNUR"] > button:not([disabled])');
-                const budbeeCount = await enabledBudbeeButtons.count();
-
-                if (budbeeCount === 0) {
-                  await snap(page, `99-no-budbee-attempt-${attempt}`, `❌ [Step 4][Attempt ${attempt}] No enabled Budbee pickup points found`);
-                  throw new Error('No enabled Budbee pickup points found in active Afhaalpunten list');
-                }
+                const enabledBudbeeButtons = await waitForPickupPoints(dialog, page, attempt);
 
                 const firstBudbee = enabledBudbeeButtons.first();
                 const firstBudbeeText = (await firstBudbee.innerText()).trim().replace(/\s+/g, ' ');
 
                 await firstBudbee.scrollIntoViewIfNeeded();
-                await snap(page, `07-before-budbee-click-attempt-${attempt}`, `[Step 4][Attempt ${attempt}] First enabled Budbee option: ${firstBudbeeText}`);
+                await snap(page, `08-before-budbee-click-${attempt}`, `[Step 4][Attempt ${attempt}] First enabled Budbee option: ${firstBudbeeText}`);
 
                 await firstBudbee.click({ timeout: 15000 });
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(3000);
 
-                await snap(page, `08-budbee-selected-attempt-${attempt}`, `✅ [Step 4][Attempt ${attempt}] Selected Budbee option: ${firstBudbeeText}`);
+                await snap(page, `09-budbee-selected-${attempt}`, `✅ [Step 4][Attempt ${attempt}] Selected Budbee option: ${firstBudbeeText}`);
 
                 await context.storageState({ path: 'storage-state.json' });
 
@@ -196,6 +219,7 @@ jobs:
                 await browser.close();
                 return true;
               } catch (error) {
+                console.error(`[Attempt ${attempt}] Step 4 failed: ${error.message}`);
                 await snap(page, `98-step4-error-attempt-${attempt}`, `❌ [Step 4][Attempt ${attempt}] Failed: ${error.message}`);
                 await context.close().catch(() => {});
                 await browser.close().catch(() => {});
