@@ -1426,3 +1426,10 @@
   used_to_login: false
   created_at: 2026-04-15 08:52:40 UTC
   last_login_at: null
+- email: arjensmit@qrlfoundation.org
+  run_id: '24448526870'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-15 10:06:14 UTC
+  last_login_at: null
