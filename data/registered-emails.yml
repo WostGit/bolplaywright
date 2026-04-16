@@ -1566,3 +1566,10 @@
   used_to_login: false
   created_at: 2026-04-16 18:49:45 UTC
   last_login_at: null
+- email: baskok@qrlfoundation.org
+  run_id: '24530756965'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-16 19:53:27 UTC
+  last_login_at: null
