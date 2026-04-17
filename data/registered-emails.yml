@@ -1650,3 +1650,10 @@
   used_to_login: false
   created_at: 2026-04-17 12:04:40 UTC
   last_login_at: null
+- email: finnvandenberg@qrlfoundation.org
+  run_id: '24568766522'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-17 13:56:40 UTC
+  last_login_at: null
