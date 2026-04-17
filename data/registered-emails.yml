@@ -1664,3 +1664,10 @@
   used_to_login: false
   created_at: 2026-04-17 14:55:05 UTC
   last_login_at: null
+- email: martijndebruijn@qrlfoundation.org
+  run_id: '24574235209'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-17 15:56:41 UTC
+  last_login_at: null
