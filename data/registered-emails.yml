@@ -1804,3 +1804,10 @@
   used_to_login: false
   created_at: 2026-04-18 11:46:04 UTC
   last_login_at: null
+- email: jeroendewit@qrlfoundation.org
+  run_id: '24604656402'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-18 12:28:31 UTC
+  last_login_at: null
