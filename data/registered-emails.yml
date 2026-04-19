@@ -1986,3 +1986,10 @@
   used_to_login: false
   created_at: 2026-04-19 12:28:25 UTC
   last_login_at: null
+- email: woutervanbeek@qrlfoundation.org
+  run_id: '24630436386'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-19 13:41:17 UTC
+  last_login_at: null
