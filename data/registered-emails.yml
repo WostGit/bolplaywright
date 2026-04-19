@@ -1951,3 +1951,10 @@
   used_to_login: false
   created_at: 2026-04-19 08:40:01 UTC
   last_login_at: null
+- email: jellesmits@qrlfoundation.org
+  run_id: '24625899589'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-19 09:31:03 UTC
+  last_login_at: null
