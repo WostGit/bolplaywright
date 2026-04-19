@@ -2014,3 +2014,10 @@
   used_to_login: false
   created_at: 2026-04-19 16:27:56 UTC
   last_login_at: null
+- email: victorgroen@qrlfoundation.org
+  run_id: '24634473966'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-19 17:07:38 UTC
+  last_login_at: null
