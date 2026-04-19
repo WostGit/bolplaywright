@@ -2035,3 +2035,10 @@
   used_to_login: false
   created_at: 2026-04-19 18:33:32 UTC
   last_login_at: null
+- email: semvandervelden@qrlfoundation.org
+  run_id: '24637208449'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-19 19:28:12 UTC
+  last_login_at: null
