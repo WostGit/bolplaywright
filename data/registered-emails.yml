@@ -2280,3 +2280,10 @@
   used_to_login: false
   created_at: 2026-04-21 22:58:29 UTC
   last_login_at: null
+- email: teunkoster@qrlfoundation.org
+  run_id: '24752113487'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-21 23:39:35 UTC
+  last_login_at: null
