@@ -2294,3 +2294,10 @@
   used_to_login: false
   created_at: 2026-04-22 00:08:08 UTC
   last_login_at: null
+- email: julianvandenberg@qrlfoundation.org
+  run_id: '24765529992'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-22 07:18:54 UTC
+  last_login_at: null
