@@ -2322,3 +2322,10 @@
   used_to_login: false
   created_at: 2026-04-22 11:38:34 UTC
   last_login_at: null
+- email: basschouten@qrlfoundation.org
+  run_id: '24778901395'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-22 12:45:03 UTC
+  last_login_at: null
