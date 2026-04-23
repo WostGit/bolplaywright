@@ -2434,3 +2434,10 @@
   used_to_login: false
   created_at: 2026-04-23 14:13:08 UTC
   last_login_at: null
+- email: koenvisser@qrlfoundation.org
+  run_id: '24845741649'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-23 16:09:58 UTC
+  last_login_at: null
