@@ -2455,3 +2455,10 @@
   used_to_login: false
   created_at: 2026-04-23 18:48:07 UTC
   last_login_at: null
+- email: lucasvanleeuwen@qrlfoundation.org
+  run_id: '24855841563'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-23 19:58:39 UTC
+  last_login_at: null
