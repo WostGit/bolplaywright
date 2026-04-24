@@ -2511,3 +2511,10 @@
   used_to_login: false
   created_at: 2026-04-24 06:01:58 UTC
   last_login_at: null
+- email: rikbrouwer@qrlfoundation.org
+  run_id: '24879628908'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-24 08:19:47 UTC
+  last_login_at: null
