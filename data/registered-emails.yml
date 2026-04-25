@@ -2763,3 +2763,10 @@
   used_to_login: false
   created_at: 2026-04-25 22:25:15 UTC
   last_login_at: null
+- email: keesschipper@qrlfoundation.org
+  run_id: '24942777445'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-25 23:05:07 UTC
+  last_login_at: null
