@@ -2658,3 +2658,10 @@
   used_to_login: false
   created_at: 2026-04-25 10:57:24 UTC
   last_login_at: null
+- email: pieterbos@qrlfoundation.org
+  run_id: '24930024562'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-25 11:39:35 UTC
+  last_login_at: null
