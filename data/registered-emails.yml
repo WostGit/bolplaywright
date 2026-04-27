@@ -2945,3 +2945,10 @@
   used_to_login: false
   created_at: 2026-04-27 04:44:54 UTC
   last_login_at: null
+- email: arthurdejong@qrlfoundation.org
+  run_id: '24982062301'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-27 07:27:57 UTC
+  last_login_at: null
