@@ -3120,3 +3120,10 @@
   used_to_login: false
   created_at: 2026-04-29 09:26:21 UTC
   last_login_at: null
+- email: gertvos@qrlfoundation.org
+  run_id: '25105629170'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-29 11:15:32 UTC
+  last_login_at: null
