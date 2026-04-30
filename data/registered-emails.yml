@@ -3225,3 +3225,10 @@
   used_to_login: false
   created_at: 2026-04-30 12:22:09 UTC
   last_login_at: null
+- email: matswouters@qrlfoundation.org
+  run_id: '25171028201'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-04-30 14:29:10 UTC
+  last_login_at: null
