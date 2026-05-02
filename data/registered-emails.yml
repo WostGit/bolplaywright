@@ -3526,3 +3526,10 @@
   used_to_login: false
   created_at: 2026-05-02 22:22:30 UTC
   last_login_at: null
+- email: dennisvandam@qrlfoundation.org
+  run_id: '25264128892'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-05-02 23:07:25 UTC
+  last_login_at: null
