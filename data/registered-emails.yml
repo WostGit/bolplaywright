@@ -3414,3 +3414,10 @@
   used_to_login: false
   created_at: 2026-05-02 06:27:23 UTC
   last_login_at: null
+- email: daandijkstra@qrlfoundation.org
+  run_id: '25247544952'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-05-02 08:09:06 UTC
+  last_login_at: null
