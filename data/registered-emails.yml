@@ -3596,3 +3596,10 @@
   used_to_login: false
   created_at: 2026-05-03 13:46:40 UTC
   last_login_at: null
+- email: jeroengroen@qrlfoundation.org
+  run_id: '25281972747'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-05-03 14:37:42 UTC
+  last_login_at: null
