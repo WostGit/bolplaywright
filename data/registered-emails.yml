@@ -3631,3 +3631,10 @@
   used_to_login: false
   created_at: 2026-05-03 18:03:30 UTC
   last_login_at: null
+- email: nielsdebruin@qrlfoundation.org
+  run_id: '25288200724'
+  repository: WostGit/bolplaywright
+  workflow: Playwright Bol Registration Only
+  used_to_login: false
+  created_at: 2026-05-03 19:15:04 UTC
+  last_login_at: null
