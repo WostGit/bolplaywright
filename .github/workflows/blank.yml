@@ -1,0 +1,48 @@
+# Save as .github/workflows/bol-password-export.yml in bolplaywright.
+# Required repository secret: BOL_PASSWORD.
+# Anyone able to download the artifact can read the password.
+name: Export Bol password (plain ZIP)
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Create plain ZIP
+        shell: bash
+        env:
+          BOL_PASSWORD: ${{ secrets.BOL_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          password = os.environ.get("BOL_PASSWORD", "")
+          if not password:
+              raise SystemExit("::error::Set the BOL_PASSWORD repository secret.")
+          archive = Path(os.environ["RUNNER_TEMP"]) / "bol-password.zip"
+          with ZipFile(archive, "w", compression=ZIP_DEFLATED) as output:
+              output.writestr("BOL_PASSWORD.txt", password.encode("utf-8"))
+          PY
+
+      - name: Upload plain ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: bol-password-plain
+          path: ${{ runner.temp }}/bol-password.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Clean up ZIP
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/bol-password.zip"
